@@ -19,7 +19,8 @@ class PlateComments:
 @dataclass
 class ApproachMinimum:
     # e.g 3000 altitude 3/4 visibility
-    altitude: str
+    altitude_msl: str
+    altitude_agl: Optional[str]
     rvr: Optional[str]
     visibility: Optional[str]
 
@@ -425,6 +426,16 @@ def extract_text_from_segmented_plate(
 CATEGORIES = "ABCD"
 
 
+def collapse_duplicate_lines(text: str) -> str:
+    """Some plates draw glyphs twice at identical positions, which makes
+    get_textbox return doubled text such as 'A\\nA' for the category letter
+    boxes. Collapse exactly two identical lines into one."""
+    lines = text.split("\n")
+    if len(lines) == 2 and lines[0] == lines[1]:
+        return lines[0]
+    return text
+
+
 def extract_minimums(
     rectangle_layout,
     plate: pymupdf.Page,
@@ -471,7 +482,9 @@ def extract_minimums(
     category_boxes = []
     for i, letter in enumerate(CATEGORIES):
         letter_rect = rectangle_layout[0][i + 1]
-        letter_text = rectangle_text_getter(letter_rect, strip=True)
+        letter_text = collapse_duplicate_lines(
+            rectangle_text_getter(letter_rect)
+        ).strip()
         if letter_text != letter:
             raise ValueError(
                 f"letter {i} after CATEGORY should be {letter}, was {letter_text}"
@@ -509,7 +522,9 @@ def extract_minimums(
         # Should be the same size as the category cell and have some text.
         if int(approach_name_rect.width) != int(category_rect.width):
             break
-        approach_name = rectangle_text_getter(approach_name_rect)
+        approach_name = collapse_duplicate_lines(
+            rectangle_text_getter(approach_name_rect)
+        )
         if len(approach_name.strip()) == 0:
             break
         # Remove the Decision Altitude/Minimum Descent Altitude suffix, and fix
@@ -636,6 +651,10 @@ def extract_minimums_from_text_box(
         text = plate.get_text(option="text", clip=box).strip()
     else:
         text = words_to_text(filter_words_in_rect(preextracted_words, box)).strip()
+    # Empty category cells can occur when minimums are only defined for some
+    # approach categories.
+    if len(text) == 0:
+        return None
     if "NA" in text:
         return None
     # If the text "CAT" appears in the box, this is a special ILS cat approach,
@@ -650,7 +669,7 @@ def extract_minimums_from_text_box(
     )
     # Gets set to visibility or rvr depending on what we're expecting next.
     next_number = None
-    altitude = ""
+    altitude_msl = ""
     # Scan for the altitude first.
     for i, letter in enumerate(letters):
         # Dash separates altitude from visibility
@@ -661,7 +680,7 @@ def extract_minimums_from_text_box(
         if letter["c"] == "/":
             next_number = "rvr"
             break
-        altitude += letter["c"]
+        altitude_msl += letter["c"]
 
     # Weird, no altitude or rvr seperator. something must have gone wrong.
     if next_number is None:
@@ -702,7 +721,17 @@ def extract_minimums_from_text_box(
     else:
         raise NotImplemented()
 
-    return ApproachMinimum(altitude=altitude, rvr=rvr, visibility=visibility)
+    altitude_agl = None
+    agl_match = re.search(r"(\d{2,5})\s*\(", text)
+    if agl_match is not None:
+        altitude_agl = agl_match.group(1)
+
+    return ApproachMinimum(
+        altitude_msl=altitude_msl,
+        altitude_agl=altitude_agl,
+        rvr=rvr,
+        visibility=visibility,
+    )
 
 
 def pymupdf_extracted_words_to_string(words):

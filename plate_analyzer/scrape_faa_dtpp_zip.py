@@ -405,7 +405,8 @@ def minimums_values_from_plate(
     if minimums_values == "Unknown":
         return None
     return MinimumsValue(
-        altitude=minimums_values.altitude,
+        altitude_msl=minimums_values.altitude_msl,
+        altitude_agl=minimums_values.altitude_agl,
         rvr=minimums_values.rvr,
         visibility=minimums_values.visibility,
     )
