@@ -19,7 +19,8 @@ class PlateComments:
 @dataclass
 class ApproachMinimum:
     # e.g 3000 altitude 3/4 visibility
-    altitude: str
+    altitude_msl: str
+    altitude_agl: Optional[str]
     rvr: Optional[str]
     visibility: Optional[str]
 
@@ -487,7 +488,7 @@ def extract_minimums_from_text_box(box, minimum_type, plate) -> ApproachMinimum:
     letters = get_minimums_text_letters(box, plate)
     # Gets set to visibility or rvr depending on what we're expecting next.
     next_number = None
-    altitude = ""
+    altitude_msl = ""
     # Scan for the altitude first.
     for i, letter in enumerate(letters):
         # Dash separates altitude from visibility
@@ -498,7 +499,7 @@ def extract_minimums_from_text_box(box, minimum_type, plate) -> ApproachMinimum:
         if letter["c"] == "/":
             next_number = "rvr"
             break
-        altitude += letter["c"]
+        altitude_msl += letter["c"]
 
     # Weird, no altitude or rvr seperator. something must have gone wrong.
     if next_number is None:
@@ -539,7 +540,17 @@ def extract_minimums_from_text_box(box, minimum_type, plate) -> ApproachMinimum:
     else:
         raise NotImplemented()
 
-    return ApproachMinimum(altitude=altitude, rvr=rvr, visibility=visibility)
+    altitude_agl = None
+    agl_match = re.search(r"(\d{2,5})\s*\(", text)
+    if agl_match is not None:
+        altitude_agl = agl_match.group(1)
+
+    return ApproachMinimum(
+        altitude_msl=altitude_msl,
+        altitude_agl=altitude_agl,
+        rvr=rvr,
+        visibility=visibility,
+    )
 
 
 def pymupdf_extracted_words_to_string(words):
