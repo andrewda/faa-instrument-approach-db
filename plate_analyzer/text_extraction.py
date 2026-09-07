@@ -776,9 +776,8 @@ def extract_vertical_profile_info(
                 if candidate_bbox.x0 < tch_label_bbox.x1:
                     continue
 
-                vertically_aligned = (
-                    max(tch_label_bbox.y0, candidate_bbox.y0)
-                    <= min(tch_label_bbox.y1, candidate_bbox.y1)
+                vertically_aligned = max(tch_label_bbox.y0, candidate_bbox.y0) <= min(
+                    tch_label_bbox.y1, candidate_bbox.y1
                 )
                 if not vertically_aligned:
                     continue
