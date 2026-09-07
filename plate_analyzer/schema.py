@@ -89,7 +89,8 @@ HIGH_ALTITUDE_APPROACH_TITLE_TYPES = {
 
 class MinimumsValue(BaseModel):
     # e.g 3000 altitude 3/4 visibility
-    altitude: str
+    altitude_msl: str
+    altitude_agl: Optional[str]
     rvr: Optional[str]
     visibility: Optional[str]
 

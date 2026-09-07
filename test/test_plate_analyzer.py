@@ -15,6 +15,7 @@ MARIN_STATE_TEST_PLATE = TEST_DATA_DIR / "05222VT15.pdf"
 PORTLAND_TEST_PLATE = TEST_DATA_DIR / "00330IL10R.pdf"
 BROOKHAVEN_TEST_PLATE = TEST_DATA_DIR / "05603V6.pdf"
 ASPEN_TEST_PLATE = TEST_DATA_DIR / "05889LDE.pdf"
+CLINTON_TEST_PLATE = TEST_DATA_DIR / "00233R4L.PDF"
 
 
 @pytest.fixture(scope="session")
@@ -50,30 +51,33 @@ def test_extract_gets_correct_minimums(extracted_information):
 
     lpv_approach = extracted_information.approach_minimums[0]
     assert lpv_approach.approach_type == "LPV"
-    assert lpv_approach.cat_a.altitude == "2017"
+    assert lpv_approach.cat_a.altitude_msl == "2017"
+    assert lpv_approach.cat_a.altitude_agl == "200"
     assert lpv_approach.cat_a.visibility == "3/4"
 
     lnav_vnav_approach = extracted_information.approach_minimums[1]
     assert lnav_vnav_approach.approach_type == "LNAV/VNAV"
-    assert lnav_vnav_approach.cat_a.altitude == "2160"
+    assert lnav_vnav_approach.cat_a.altitude_msl == "2160"
     assert lnav_vnav_approach.cat_a.visibility == "1"
 
     lnav_approach = extracted_information.approach_minimums[2]
     assert lnav_approach.approach_type == "LNAV"
-    assert lnav_approach.cat_a.altitude == "2240"
+    assert lnav_approach.cat_a.altitude_msl == "2240"
     assert lnav_approach.cat_a.visibility == "1"
-    assert lnav_approach.cat_d.altitude == "2240"
+    assert lnav_approach.cat_d.altitude_msl == "2240"
+    assert lnav_approach.cat_d.altitude_agl == "423"
     assert lnav_approach.cat_d.visibility == "1 1/4"
 
     circling_approach = extracted_information.approach_minimums[3]
     assert circling_approach.approach_type == "CIRCLING (Expanded Radius)"
-    assert circling_approach.cat_a.altitude == "2320"
+    assert circling_approach.cat_a.altitude_msl == "2320"
     assert circling_approach.cat_a.visibility == "1"
-    assert circling_approach.cat_b.altitude == "2360"
+    assert circling_approach.cat_b.altitude_msl == "2360"
     assert circling_approach.cat_b.visibility == "1"
-    assert circling_approach.cat_c.altitude == "2380"
+    assert circling_approach.cat_c.altitude_msl == "2380"
+    assert circling_approach.cat_c.altitude_agl == "563"
     assert circling_approach.cat_c.visibility == "1 1/2"
-    assert circling_approach.cat_d.altitude == "2400"
+    assert circling_approach.cat_d.altitude_msl == "2400"
     assert circling_approach.cat_d.visibility == "2"
 
 
@@ -159,25 +163,27 @@ def test_extract_gets_correct_minimums_for_athens(athens_info):
 
     ils_approach = athens_info.approach_minimums[0]
     assert ils_approach.approach_type == "S-ILS 27"
-    assert ils_approach.cat_a.altitude == "1013"
+    assert ils_approach.cat_a.altitude_msl == "1013"
+    assert ils_approach.cat_a.altitude_agl == "200"
     assert ils_approach.cat_a.visibility == "3/4"
     assert ils_approach.cat_d == ils_approach.cat_a
 
     loc_approach = athens_info.approach_minimums[1]
     assert loc_approach.approach_type == "S-LOC 27"
-    assert loc_approach.cat_a.altitude == "1160"
+    assert loc_approach.cat_a.altitude_msl == "1160"
+    assert loc_approach.cat_a.altitude_agl == "347"
     assert loc_approach.cat_a.visibility == "3/4"
     assert ils_approach.cat_d == ils_approach.cat_a
 
     circling_approach = athens_info.approach_minimums[2]
     assert circling_approach.approach_type == "CIRCLING (Expanded Radius)"
-    assert circling_approach.cat_a.altitude == "1260"
+    assert circling_approach.cat_a.altitude_msl == "1260"
     assert circling_approach.cat_a.visibility == "1"
-    assert circling_approach.cat_b.altitude == "1280"
+    assert circling_approach.cat_b.altitude_msl == "1280"
     assert circling_approach.cat_b.visibility == "1"
-    assert circling_approach.cat_c.altitude == "1320"
+    assert circling_approach.cat_c.altitude_msl == "1320"
     assert circling_approach.cat_c.visibility == "1 1/2"
-    assert circling_approach.cat_d.altitude == "1460"
+    assert circling_approach.cat_d.altitude_msl == "1460"
     assert circling_approach.cat_d.visibility == "2"
 
 
@@ -235,21 +241,21 @@ def test_extract_gets_correct_minimums_for_martin(marin_state_info):
 
     straight_in_approach = marin_state_info.approach_minimums[0]
     assert straight_in_approach.approach_type == "S-15"
-    assert straight_in_approach.cat_a.altitude == "920"
+    assert straight_in_approach.cat_a.altitude_msl == "920"
     assert straight_in_approach.cat_a.visibility == "1 1/4"
     assert straight_in_approach.cat_b == straight_in_approach.cat_a
-    assert straight_in_approach.cat_c.altitude == "920"
+    assert straight_in_approach.cat_c.altitude_msl == "920"
     assert straight_in_approach.cat_c.visibility == "2 1/2"
     assert straight_in_approach.cat_d == straight_in_approach.cat_c
 
     circling_approach = marin_state_info.approach_minimums[1]
     assert circling_approach.approach_type == "CIRCLING"
-    assert circling_approach.cat_a.altitude == "920"
+    assert circling_approach.cat_a.altitude_msl == "920"
     assert circling_approach.cat_a.visibility == "1 1/4"
     assert circling_approach.cat_b == circling_approach.cat_a
-    assert circling_approach.cat_c.altitude == "920"
+    assert circling_approach.cat_c.altitude_msl == "920"
     assert circling_approach.cat_c.visibility == "2 3/4"
-    assert circling_approach.cat_d.altitude == "920"
+    assert circling_approach.cat_d.altitude_msl == "920"
     assert circling_approach.cat_d.visibility == "3"
 
 
@@ -275,26 +281,29 @@ def test_extract_gets_correct_minimums_for_portland(portland_info):
     # Test for whe non-circling minimums have a height above threshold number.
     ils_approach = portland_info.approach_minimums[0]
     assert ils_approach.approach_type == "S-ILS 10R"
-    assert ils_approach.cat_a.altitude == "224"
+    assert ils_approach.cat_a.altitude_msl == "224"
+    assert ils_approach.cat_a.altitude_agl == "200"
     assert ils_approach.cat_a.rvr == "18"
     assert ils_approach.cat_d == ils_approach.cat_a
 
     localizer_approach = portland_info.approach_minimums[1]
     assert localizer_approach.approach_type == "S-LOC 10R"
-    assert localizer_approach.cat_a.altitude == "860"
+    assert localizer_approach.cat_a.altitude_msl == "860"
+    assert localizer_approach.cat_a.altitude_agl == "836"
     assert localizer_approach.cat_a.rvr == "24"
-    assert localizer_approach.cat_b.altitude == "860"
+    assert localizer_approach.cat_b.altitude_msl == "860"
     assert localizer_approach.cat_b.rvr == "40"
-    assert localizer_approach.cat_c.altitude == "860"
+    assert localizer_approach.cat_c.altitude_msl == "860"
     assert localizer_approach.cat_c.visibility == "1 7/8"
     assert localizer_approach.cat_d == localizer_approach.cat_c
 
     circling_approach = portland_info.approach_minimums[2]
     assert circling_approach.approach_type == "CIRCLING (Expanded Radius)"
-    assert circling_approach.cat_a.altitude == "860"
+    assert circling_approach.cat_a.altitude_msl == "860"
     assert circling_approach.cat_a.visibility == "1 1/4"
     assert circling_approach.cat_b == circling_approach.cat_a
-    assert circling_approach.cat_c.altitude == "1060"
+    assert circling_approach.cat_c.altitude_msl == "1060"
+    assert circling_approach.cat_c.altitude_agl == "1029"
     assert circling_approach.cat_c.visibility == "3"
     assert circling_approach.cat_d == circling_approach.cat_c
 
@@ -322,7 +331,7 @@ def test_extract_gets_correct_minimums_for_brookhaven(brookhaven_info):
 
     vor_approach = brookhaven_info.approach_minimums[0]
     assert vor_approach.approach_type == "S-6"
-    assert vor_approach.cat_a.altitude == "620"
+    assert vor_approach.cat_a.altitude_msl == "620"
     assert vor_approach.cat_a.visibility == "1"
     assert vor_approach.cat_b == vor_approach.cat_a
 
@@ -331,7 +340,7 @@ def test_extract_gets_correct_minimums_for_brookhaven(brookhaven_info):
 
     circling_approach = brookhaven_info.approach_minimums[1]
     assert circling_approach.approach_type == "CIRCLING (Expanded Radius)"
-    assert circling_approach.cat_a.altitude == "620"
+    assert circling_approach.cat_a.altitude_msl == "620"
     assert circling_approach.cat_a.visibility == "1"
     assert circling_approach.cat_b == circling_approach.cat_a
 
@@ -362,11 +371,12 @@ def test_extract_gets_correct_minimums_for_aspen(aspen_info):
 
     circling_approach = aspen_info.approach_minimums[0]
     assert circling_approach.approach_type == "CIRCLING"
-    assert circling_approach.cat_a.altitude == "9840"
+    assert circling_approach.cat_a.altitude_msl == "9840"
+    assert circling_approach.cat_a.altitude_agl == "2002"
     assert circling_approach.cat_a.visibility == "3"
-    assert circling_approach.cat_b.altitude == "10220"
+    assert circling_approach.cat_b.altitude_msl == "10220"
     assert circling_approach.cat_b.visibility == "3"
-    assert circling_approach.cat_c.altitude == "10960"
+    assert circling_approach.cat_c.altitude_msl == "10960"
     assert circling_approach.cat_c.visibility == "3"
     assert circling_approach.cat_d is None
 
@@ -377,3 +387,59 @@ def test_extract_gets_correct_vertical_profile_for_aspen(aspen_info):
     assert aspen_info.vgsi_angle == "3.50"
     assert aspen_info.vgsi_tch == "55"
     assert aspen_info.vgsi_vda_not_coincident == True
+
+
+@pytest.fixture(scope="session")
+def clinton_info():
+    return plate_analyzer.extract_information_from_plate(CLINTON_TEST_PLATE)
+
+
+def test_extract_gets_correct_minimums_for_clinton(clinton_info):
+    # Regression test: this plate draws the category letter glyphs twice at
+    # identical positions, which used to make the letter-box check fail and
+    # silently produce no approach minimums.
+    assert len(clinton_info.approach_minimums) == 4
+
+    lpv_approach = clinton_info.approach_minimums[0]
+    assert lpv_approach.approach_type == "LPV"
+    assert lpv_approach.cat_a.altitude_msl == "544"
+    assert lpv_approach.cat_a.altitude_agl == "286"
+    assert lpv_approach.cat_a.rvr == "40"
+    assert lpv_approach.cat_b == lpv_approach.cat_a
+    assert lpv_approach.cat_c == lpv_approach.cat_a
+    assert lpv_approach.cat_d == lpv_approach.cat_a
+
+    lnav_vnav_approach = clinton_info.approach_minimums[1]
+    assert lnav_vnav_approach.approach_type == "LNAV/VNAV"
+    assert lnav_vnav_approach.cat_a.altitude_msl == "824"
+    assert lnav_vnav_approach.cat_a.altitude_agl == "566"
+    assert lnav_vnav_approach.cat_a.visibility == "1 1/2"
+    assert lnav_vnav_approach.cat_b == lnav_vnav_approach.cat_a
+    assert lnav_vnav_approach.cat_c == lnav_vnav_approach.cat_a
+    assert lnav_vnav_approach.cat_d == lnav_vnav_approach.cat_a
+
+    lnav_approach = clinton_info.approach_minimums[2]
+    assert lnav_approach.approach_type == "LNAV"
+    assert lnav_approach.cat_a.altitude_msl == "780"
+    assert lnav_approach.cat_a.altitude_agl == "522"
+    assert lnav_approach.cat_a.rvr == "40"
+    assert lnav_approach.cat_b == lnav_approach.cat_a
+    assert lnav_approach.cat_c.altitude_msl == "780"
+    assert lnav_approach.cat_c.altitude_agl == "522"
+    assert lnav_approach.cat_c.rvr == "55"
+    assert lnav_approach.cat_d == lnav_approach.cat_c
+
+    circling_approach = clinton_info.approach_minimums[3]
+    assert circling_approach.approach_type == "CIRCLING"
+    assert circling_approach.cat_a.altitude_msl == "820"
+    assert circling_approach.cat_a.altitude_agl == "554"
+    assert circling_approach.cat_a.visibility == "1"
+    assert circling_approach.cat_b.altitude_msl == "1000"
+    assert circling_approach.cat_b.altitude_agl == "734"
+    assert circling_approach.cat_b.visibility == "1"
+    assert circling_approach.cat_c.altitude_msl == "1180"
+    assert circling_approach.cat_c.altitude_agl == "914"
+    assert circling_approach.cat_c.visibility == "2 3/4"
+    assert circling_approach.cat_d.altitude_msl == "1180"
+    assert circling_approach.cat_d.altitude_agl == "914"
+    assert circling_approach.cat_d.visibility == "3"
