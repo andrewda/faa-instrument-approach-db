@@ -306,6 +306,16 @@ def extract_text_from_segmented_plate(
 CATEGORIES = "ABCD"
 
 
+def collapse_duplicate_lines(text: str) -> str:
+    """Some plates draw glyphs twice at identical positions, which makes
+    get_textbox return doubled text such as 'A\\nA' for the category letter
+    boxes. Collapse exactly two identical lines into one."""
+    lines = text.split("\n")
+    if len(lines) == 2 and lines[0] == lines[1]:
+        return lines[0]
+    return text
+
+
 def extract_minimums(
     rectangle_layout, plate: pymupdf.Page, textpage
 ) -> List[ApproachCategory]:
@@ -341,7 +351,9 @@ def extract_minimums(
     category_boxes = []
     for i, letter in enumerate(CATEGORIES):
         letter_rect = rectangle_layout[0][i + 1]
-        letter_text = plate.get_textbox(letter_rect, textpage=textpage).strip()
+        letter_text = collapse_duplicate_lines(
+            plate.get_textbox(letter_rect, textpage=textpage)
+        ).strip()
         if letter_text != letter:
             raise ValueError(
                 f"letter {i} after CATEGORY should be {letter}, was {letter_text}"
@@ -368,7 +380,9 @@ def extract_minimums(
         # Should be the same size as the category cell and have some text.
         if int(approach_name_rect.width) != int(category_rect.width):
             break
-        approach_name = plate.get_textbox(approach_name_rect, textpage=textpage)
+        approach_name = collapse_duplicate_lines(
+            plate.get_textbox(approach_name_rect, textpage=textpage)
+        )
         if len(approach_name.strip()) == 0:
             break
         # Remove the Decision Altitude/Minimum Descent Altitude suffix, and fix

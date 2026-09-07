@@ -15,8 +15,7 @@ MARIN_STATE_TEST_PLATE = TEST_DATA_DIR / "05222VT15.pdf"
 PORTLAND_TEST_PLATE = TEST_DATA_DIR / "00330IL10R.pdf"
 BROOKHAVEN_TEST_PLATE = TEST_DATA_DIR / "05603V6.pdf"
 ASPEN_TEST_PLATE = TEST_DATA_DIR / "05889LDE.pdf"
-
-TEST_PLATE_00233R4L = TEST_DATA_DIR / "00233R4L.PDF"
+CLINTON_TEST_PLATE = TEST_DATA_DIR / "00233R4L.PDF"
 
 
 @pytest.fixture(scope="session")
@@ -390,19 +389,57 @@ def test_extract_gets_correct_vertical_profile_for_aspen(aspen_info):
     assert aspen_info.vgsi_vda_not_coincident == True
 
 
-@pytest.mark.skipif(
-    not TEST_PLATE_00233R4L.exists(),
-    reason="Missing test_data/00233R4L.PDF; add this plate to run this regression test",
-)
-def test_extract_gets_minimums_for_00233r4l():
-    info = plate_analyzer.extract_information_from_plate(TEST_PLATE_00233R4L)
+@pytest.fixture(scope="session")
+def clinton_info():
+    return plate_analyzer.extract_information_from_plate(CLINTON_TEST_PLATE)
 
-    assert len(info.approach_minimums) > 0
 
-    minima = []
-    for approach in info.approach_minimums:
-        for cat in (approach.cat_a, approach.cat_b, approach.cat_c, approach.cat_d):
-            if cat is not None and cat != "Unknown":
-                minima.append(cat)
+def test_extract_gets_correct_minimums_for_clinton(clinton_info):
+    # Regression test: this plate draws the category letter glyphs twice at
+    # identical positions, which used to make the letter-box check fail and
+    # silently produce no approach minimums.
+    assert len(clinton_info.approach_minimums) == 4
 
-    assert len(minima) > 0
+    lpv_approach = clinton_info.approach_minimums[0]
+    assert lpv_approach.approach_type == "LPV"
+    assert lpv_approach.cat_a.altitude_msl == "544"
+    assert lpv_approach.cat_a.altitude_agl == "286"
+    assert lpv_approach.cat_a.rvr == "40"
+    assert lpv_approach.cat_b == lpv_approach.cat_a
+    assert lpv_approach.cat_c == lpv_approach.cat_a
+    assert lpv_approach.cat_d == lpv_approach.cat_a
+
+    lnav_vnav_approach = clinton_info.approach_minimums[1]
+    assert lnav_vnav_approach.approach_type == "LNAV/VNAV"
+    assert lnav_vnav_approach.cat_a.altitude_msl == "824"
+    assert lnav_vnav_approach.cat_a.altitude_agl == "566"
+    assert lnav_vnav_approach.cat_a.visibility == "1 1/2"
+    assert lnav_vnav_approach.cat_b == lnav_vnav_approach.cat_a
+    assert lnav_vnav_approach.cat_c == lnav_vnav_approach.cat_a
+    assert lnav_vnav_approach.cat_d == lnav_vnav_approach.cat_a
+
+    lnav_approach = clinton_info.approach_minimums[2]
+    assert lnav_approach.approach_type == "LNAV"
+    assert lnav_approach.cat_a.altitude_msl == "780"
+    assert lnav_approach.cat_a.altitude_agl == "522"
+    assert lnav_approach.cat_a.rvr == "40"
+    assert lnav_approach.cat_b == lnav_approach.cat_a
+    assert lnav_approach.cat_c.altitude_msl == "780"
+    assert lnav_approach.cat_c.altitude_agl == "522"
+    assert lnav_approach.cat_c.rvr == "55"
+    assert lnav_approach.cat_d == lnav_approach.cat_c
+
+    circling_approach = clinton_info.approach_minimums[3]
+    assert circling_approach.approach_type == "CIRCLING"
+    assert circling_approach.cat_a.altitude_msl == "820"
+    assert circling_approach.cat_a.altitude_agl == "554"
+    assert circling_approach.cat_a.visibility == "1"
+    assert circling_approach.cat_b.altitude_msl == "1000"
+    assert circling_approach.cat_b.altitude_agl == "734"
+    assert circling_approach.cat_b.visibility == "1"
+    assert circling_approach.cat_c.altitude_msl == "1180"
+    assert circling_approach.cat_c.altitude_agl == "914"
+    assert circling_approach.cat_c.visibility == "2 3/4"
+    assert circling_approach.cat_d.altitude_msl == "1180"
+    assert circling_approach.cat_d.altitude_agl == "914"
+    assert circling_approach.cat_d.visibility == "3"
