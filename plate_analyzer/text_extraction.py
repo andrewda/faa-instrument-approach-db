@@ -758,17 +758,36 @@ def extract_vertical_profile_info(
 
     # --- Primary TCH Extraction (Positional based on VDA) ---
     if vda_bbox is not None:
-        for i, word_info in enumerate(words):
-            # Find the word "TCH"
-            if word_info[4].upper() == "TCH" and i + 1 < len(words):
-                tch_num_word_info = words[i + 1]
-                tch_num_text = tch_num_word_info[4].strip()
-                tch_num_bbox = pymupdf.Rect(tch_num_word_info[:4])
+        for word_info in words:
+            if word_info[4].upper() != "TCH":
+                continue
 
-                # Check if it's a number and located below the VDA number
-                if tch_num_text.isdigit() and tch_num_bbox.y0 > vda_bbox.y1:
-                    tch = tch_num_text
-                    break  # Found primary TCH below VDA
+            tch_label_bbox = pymupdf.Rect(word_info[:4])
+            if tch_label_bbox.y0 <= vda_bbox.y1:
+                continue
+
+            same_line_numeric_words = []
+            for candidate_word_info in words:
+                candidate_text = candidate_word_info[4].strip()
+                if not candidate_text.isdigit():
+                    continue
+
+                candidate_bbox = pymupdf.Rect(candidate_word_info[:4])
+                if candidate_bbox.x0 < tch_label_bbox.x1:
+                    continue
+
+                vertically_aligned = max(tch_label_bbox.y0, candidate_bbox.y0) <= min(
+                    tch_label_bbox.y1, candidate_bbox.y1
+                )
+                if not vertically_aligned:
+                    continue
+
+                same_line_numeric_words.append((candidate_bbox.x0, candidate_text))
+
+            if same_line_numeric_words:
+                same_line_numeric_words.sort(key=lambda candidate: candidate[0])
+                tch = same_line_numeric_words[0][1]
+                break
 
     return vda, tch, vgsi_angle, vgsi_tch, vgsi_vda_not_coincident
 

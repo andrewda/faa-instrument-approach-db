@@ -48,9 +48,9 @@ def test_get_i_beam_from_line_returns_horizontal_line_for_vertical():
     assert i_beam_bottom[1].y == -I_BEAM_PERPENDICULAR_LENGTH
 
 
-def calculate_perpendicular_distance_from_horizontal_line():
+def test_calculate_perpendicular_distance_from_horizontal_line():
     line = np.array([0, 0]), np.array([10, 0])
     point = np.array([5, 1])
 
     distance = line_distance_to_point(line, point)
-    assert distance == 5
+    assert distance == 1
