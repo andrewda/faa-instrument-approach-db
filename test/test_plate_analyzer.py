@@ -16,6 +16,8 @@ PORTLAND_TEST_PLATE = TEST_DATA_DIR / "00330IL10R.pdf"
 BROOKHAVEN_TEST_PLATE = TEST_DATA_DIR / "05603V6.pdf"
 ASPEN_TEST_PLATE = TEST_DATA_DIR / "05889LDE.pdf"
 
+CORVALLIS_TEST_PLATE = TEST_DATA_DIR / "00233R4L.PDF"
+
 
 @pytest.fixture(scope="session")
 def extracted_information():
@@ -386,3 +388,24 @@ def test_extract_gets_correct_vertical_profile_for_aspen(aspen_info):
     assert aspen_info.vgsi_angle == "3.50"
     assert aspen_info.vgsi_tch == "55"
     assert aspen_info.vgsi_vda_not_coincident == True
+
+
+@pytest.mark.skipif(
+    not CORVALLIS_TEST_PLATE.exists(),
+    reason="Missing test_data/00233R4L.PDF; add this plate to run this regression test",
+)
+def test_extract_gets_minimums_for_corvallis():
+    corvallis_info = plate_analyzer.extract_information_from_plate(CORVALLIS_TEST_PLATE)
+
+    assert corvallis_info.approach_name == "ILS or LOC RWY 17"
+    assert len(corvallis_info.approach_minimums) >= 3
+
+    minima = []
+    for approach in corvallis_info.approach_minimums:
+        for cat in (approach.cat_a, approach.cat_b, approach.cat_c, approach.cat_d):
+            if cat is not None and cat != "Unknown":
+                minima.append(cat)
+
+    assert any(m.altitude_agl == "200" for m in minima)
+    assert any(m.altitude_agl == "632" for m in minima)
+    assert any(m.altitude_agl == "630" for m in minima)

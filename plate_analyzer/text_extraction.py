@@ -478,6 +478,10 @@ def get_minimums_text_letters(box, plate):
 def extract_minimums_from_text_box(box, minimum_type, plate) -> ApproachMinimum:
     # Check if the procedure is allowed for this category.
     text = plate.get_text(option="text", clip=box).strip()
+    # Empty category cells can occur when minimums are only defined for some
+    # approach categories.
+    if len(text) == 0:
+        return None
     if "NA" in text:
         return None
     # If the text "CAT" appears in the box, this is a special ILS cat approach,
