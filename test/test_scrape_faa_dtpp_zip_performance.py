@@ -36,14 +36,14 @@ def test_process_single_dtpp_pdf_loads_pdf_from_zip(monkeypatch, tmp_path):
     def fake_extract(pdf, debug=False):
         del debug
         assert pdf == "fake-pdf"
-        return "parsed-info"
+        return "parsed-info", {"total": 0.1}
 
     monkeypatch.setattr(scrape_faa_dtpp_zip.pymupdf, "open", fake_open)
     monkeypatch.setattr(
-        scrape_faa_dtpp_zip, "extract_information_from_pdf", fake_extract
+        scrape_faa_dtpp_zip, "extract_information_from_pdf_with_timing", fake_extract
     )
 
-    file_name, approach_info, exception_message, zip_file_name = (
+    file_name, approach_info, exception_message, zip_file_name, timings = (
         scrape_faa_dtpp_zip.process_single_dtpp_pdf((str(zip_path), "B.PDF"))
     )
 
@@ -51,6 +51,7 @@ def test_process_single_dtpp_pdf_loads_pdf_from_zip(monkeypatch, tmp_path):
     assert approach_info == "parsed-info"
     assert exception_message is None
     assert zip_file_name == zip_path.name
+    assert timings == {"total": 0.1}
     assert captured["filetype"] == "pdf"
     assert captured["stream_type"] is io.BytesIO
 
@@ -70,13 +71,14 @@ def test_process_single_dtpp_pdf_reports_exceptions_with_zip_name(
         raise ValueError("boom")
 
     monkeypatch.setattr(
-        scrape_faa_dtpp_zip, "extract_information_from_pdf", raise_error
+        scrape_faa_dtpp_zip, "extract_information_from_pdf_with_timing", raise_error
     )
 
-    _, approach_info, exception_message, zip_file_name = (
+    _, approach_info, exception_message, zip_file_name, timings = (
         scrape_faa_dtpp_zip.process_single_dtpp_pdf((str(zip_path), "B.PDF"))
     )
 
     assert approach_info is None
     assert "ValueError('boom')" in exception_message
     assert zip_file_name == zip_path.name
+    assert timings is None

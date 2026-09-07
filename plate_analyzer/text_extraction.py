@@ -73,6 +73,101 @@ class SegmentedPlate:
     vgsi_vda_not_coincident: bool = False
 
 
+VGSI_PATTERN = re.compile(r"VGSI\s+Angle\s+(\d\.\d{2})/TCH\s+(\d+)", re.IGNORECASE)
+VDA_NUM_PATTERN = re.compile(r"^(\d\.\d{2})$")
+VDA_NUM_DEG_PATTERN = re.compile(r"^(\d\.\d{2})°$")
+
+
+def rect_to_cache_key(rect: pymupdf.Rect) -> Tuple[float, float, float, float]:
+    return (
+        round(rect.x0, 1),
+        round(rect.y0, 1),
+        round(rect.x1, 1),
+        round(rect.y1, 1),
+    )
+
+
+def build_rectangle_text_cache(
+    rectangle_layout: List[List[pymupdf.Rect]], plate: pymupdf.Page, textpage
+) -> Dict[Tuple[float, float, float, float], str]:
+    cache = {}
+    for row in rectangle_layout:
+        for rect in row:
+            cache[rect_to_cache_key(rect)] = plate.get_textbox(rect, textpage=textpage)
+    return cache
+
+
+def rect_contains_bbox(
+    rect: pymupdf.Rect, bbox: Tuple[float, float, float, float], tolerance: float = 0.5
+) -> bool:
+    return (
+        bbox[0] >= rect.x0 - tolerance
+        and bbox[1] >= rect.y0 - tolerance
+        and bbox[2] <= rect.x1 + tolerance
+        and bbox[3] <= rect.y1 + tolerance
+    )
+
+
+def rect_overlaps_bbox(
+    rect: pymupdf.Rect, bbox: Tuple[float, float, float, float], tolerance: float = 0.5
+) -> bool:
+    return not (
+        bbox[2] < rect.x0 - tolerance
+        or bbox[0] > rect.x1 + tolerance
+        or bbox[3] < rect.y0 - tolerance
+        or bbox[1] > rect.y1 + tolerance
+    )
+
+
+def filter_words_in_rect(words, rect: pymupdf.Rect):
+    return [
+        word
+        for word in words
+        if rect_overlaps_bbox(rect, (word[0], word[1], word[2], word[3]), tolerance=1.0)
+    ]
+
+
+def words_to_text(words) -> str:
+    return " ".join(word[4].strip() for word in words if word[4].strip())
+
+
+def flatten_rawdict_chars(raw_text_dict) -> List[dict]:
+    chars = []
+    for block in raw_text_dict.get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                chars.extend(span.get("chars", []))
+    return chars
+
+
+def build_point_spatial_index(points, cell_size=8):
+    index = collections.defaultdict(list)
+    for point in points:
+        index[(int(point.x // cell_size), int(point.y // cell_size))].append(point)
+    return index
+
+
+def nearest_distance_from_spatial_index(
+    point: pymupdf.Point,
+    spatial_index,
+    cell_size: int,
+    max_distance: float,
+) -> float:
+    cell_x = int(point.x // cell_size)
+    cell_y = int(point.y // cell_size)
+    search_radius = int(max_distance // cell_size) + 1
+    closest = float("inf")
+
+    for dx in range(-search_radius, search_radius + 1):
+        for dy in range(-search_radius, search_radius + 1):
+            for candidate in spatial_index.get((cell_x + dx, cell_y + dy), []):
+                distance = candidate.distance_to(point)
+                if distance < closest:
+                    closest = distance
+
+    return closest
+
+
 def extract_text_from_segmented_plate(
     plate: pymupdf.Page, drawings, textpage, rectangles: List[pymupdf.Rect], debug=False
 ) -> SegmentedPlate:
@@ -98,15 +193,21 @@ def extract_text_from_segmented_plate(
             previous_y = rectangle_y
         rectangle_layout[-1].append(r)
 
+    rectangle_text_cache = build_rectangle_text_cache(
+        rectangle_layout=rectangle_layout, plate=plate, textpage=textpage
+    )
+
+    def rectangle_text(rect: pymupdf.Rect, strip: bool = False):
+        text = rectangle_text_cache[rect_to_cache_key(rect)]
+        if strip:
+            return text.strip()
+        return text
+
     approach_course_box = rectangle_layout[0][1]
     # Some RNP approaches do not have a channel/ILS box on the top-left
     if len(rectangle_layout[0]) == 2:
         approach_course_box = rectangle_layout[0][0]
-    approach_text = (
-        plate.get_textbox(approach_course_box, textpage=textpage)
-        .replace("APP CRS", "")
-        .strip()
-    )
+    approach_text = rectangle_text(approach_course_box).replace("APP CRS", "").strip()
 
     # Approach title will be on the right side of the page, after the approach
     # course and info boxes on the left.
@@ -143,29 +244,70 @@ def extract_text_from_segmented_plate(
 
     # Get all the waypoints in the plan view.
     plan_view_box = find_plan_view_box(rectangle_layout, plate)
-    waypoints = extract_all_waypoints_from_plan_view(plan_view_box, plate)
+    plan_view_words = plate.get_text(option="words", sort=True, clip=plan_view_box)
+    plan_view_rawdict = plate.get_text(option="rawdict", sort=True, clip=plan_view_box)
+    waypoints = extract_all_waypoints_from_plan_view(
+        plan_view_box,
+        plate,
+        plan_view_words=plan_view_words,
+    )
     (has_hold_in_lieu, has_procedure_turn) = (
         drawing_extraction.extract_approach_metadata(
             plan_view_box, plate, drawings, debug=debug
         )
     )
-    has_dme_arc = has_dme_arc_in_plan_view(plan_view_box, plate)
+    has_dme_arc = has_dme_arc_in_plan_view(
+        plan_view_box,
+        plate,
+        plan_view_rawdict=plan_view_rawdict,
+    )
 
-    # Look for "MISSED APPROACH" on rows 0 to 4 for the missed approach
-    # instructions.
+    # Single top-section classification pass for missed approach, comment box,
+    # and required equipment candidates.
     missed_approach_rect = None
-    for i in range(0, 3):
+    comment_candidates = []
+    required_equipment_candidates = []
+    max_scan_row = min(len(rectangle_layout), 4)
+    for i in range(0, max_scan_row):
         for rect in rectangle_layout[i]:
-            rect_text = plate.get_textbox(rect, textpage=textpage)
-            if "MISSED" not in rect_text:
-                continue
-            # HACK: RNAV 22 for FLP has a typo. (Reported to the FAA)
-            if "APPROACH" not in rect_text and "APROACH" not in rect_text:
-                continue
-            missed_approach_rect = rect
+            rect_text = rectangle_text(rect)
+            if i <= 2 and "MISSED" in rect_text:
+                # HACK: RNAV 22 for FLP has a typo. (Reported to the FAA)
+                if "APPROACH" in rect_text or "APROACH" in rect_text:
+                    missed_approach_rect = rect
+
+            if i in (1, 2, 3) and rect.width > (plate.rect.width * 0.3):
+                comment_candidates.append(rect)
+            if i in (0, 1, 2):
+                required_equipment_candidates.append(rect)
 
     if missed_approach_rect is None:
         raise ValueError("Could not find missed approach instructions")
+
+    # Comments box will be more than a third the width of the document, and
+    # its bottom will line up with the missed approach box.
+    comments_box = None
+    for rect in comment_candidates:
+        if rect == missed_approach_rect:
+            continue
+        if abs(rect.bottom_left.y - missed_approach_rect.bottom_left.y) < 3:
+            if comments_box is None or rect.width > comments_box.width:
+                comments_box = rect
+    if comments_box is None:
+        raise ValueError("Could not find comments box")
+
+    # If there is a required equipment box, it will be a narrow one above the
+    # comments.
+    required_equipment = None
+    for rect in required_equipment_candidates:
+        if (
+            rect != comments_box
+            and int(rect.width - comments_box.width) == 0
+            and rect.top_left.y < comments_box.top_left.y
+        ):
+            required_equipment = rect
+            break
+
     # Missed approach has very strange ordering in the pdf, we often end up with
     # things like:
     #   'direct CELSY and hold.  \nMISSED APPROACH: Climb to 4200'.
@@ -175,23 +317,6 @@ def extract_text_from_segmented_plate(
     )
     missed_approach_text = pymupdf_extracted_words_to_string(missed_approach_text)
 
-    # Comments box will be more than a third the width of the document, and
-    # its bottom will line up with the missed approach box.
-    comments_box = None
-    for i in (
-        1,
-        2,
-        3,
-    ):
-        for rect in rectangle_layout[i]:
-            if (
-                rect.width > (plate.rect.width * 0.3)
-                and abs(rect.bottom_left.y - missed_approach_rect.bottom_left.y) < 3
-            ):
-                comments_box = rect
-                break
-    if comments_box is None:
-        raise ValueError("Could not find comments box")
     # The left side of the comments box will have a "T" for non-standard takeoff
     # minimums and "A" for non-standard alternative requirements.
     non_standard_takeoff_minimums = False
@@ -222,19 +347,6 @@ def extract_text_from_segmented_plate(
         comments=comments_text,
     )
 
-    # If there is a required equipment box, it will be a narrow one above the
-    # comments.
-    required_equipment = None
-    for i in (0, 1, 2):
-        for rect in rectangle_layout[i]:
-            if (
-                rect != comments_box
-                and int(rect.width - comments_box.width) == 0
-                and rect.top_left.y < comments_box.top_left.y
-            ):
-                required_equipment = rect
-                break
-
     if required_equipment:
         required_equipment_text = plate.get_text(
             option="words", sort=True, clip=required_equipment
@@ -244,8 +356,26 @@ def extract_text_from_segmented_plate(
             pymupdf_extracted_words_to_string(required_equipment_text),
         )
 
+    # Find CATEGORY rectangle once and reuse.
+    category_rect = None
+    for i in range(len(rectangle_layout) - 1, 0, -1):
+        for rect in rectangle_layout[i]:
+            rect_text = rectangle_text(rect, strip=True)
+            if "CATEGORY" not in rect_text:
+                continue
+            category_rect = rect
+            break
+        if category_rect is not None:
+            break
+
     try:
-        minimums = extract_minimums(rectangle_layout, plate=plate, textpage=textpage)
+        minimums = extract_minimums(
+            rectangle_layout,
+            plate=plate,
+            textpage=textpage,
+            rectangle_text_getter=rectangle_text,
+            category_rect=category_rect,
+        )
     except ValueError:
         minimums = []
 
@@ -253,18 +383,8 @@ def extract_text_from_segmented_plate(
     profile_view_box = None
     category_rect_top = plate.rect.height  # Default to bottom if minimums not foun
 
-    # Find the top of the minimums section by looking for the CATEGORY header
-    temp_category_rect = None
-    for i in range(len(rectangle_layout) - 1, 0, -1):
-        for j, rect in enumerate(rectangle_layout[i]):
-            rect_text = plate.get_textbox(rect, textpage=textpage).strip()
-            if "CATEGORY" in rect_text:
-                temp_category_rect = rect
-                break
-        if temp_category_rect:
-            break
-    if temp_category_rect:
-        category_rect_top = temp_category_rect.y0
+    if category_rect:
+        category_rect_top = category_rect.y0
 
     if plan_view_box:
         profile_view_box = pymupdf.Rect(
@@ -306,15 +426,26 @@ CATEGORIES = "ABCD"
 
 
 def extract_minimums(
-    rectangle_layout, plate: pymupdf.Page, textpage
+    rectangle_layout,
+    plate: pymupdf.Page,
+    textpage,
+    rectangle_text_getter=None,
+    category_rect: Optional[pymupdf.Rect] = None,
 ) -> List[ApproachCategory]:
+    if rectangle_text_getter is None:
+        rectangle_text_getter = lambda rect, strip=False: (
+            plate.get_textbox(rect, textpage=textpage).strip()
+            if strip
+            else plate.get_textbox(rect, textpage=textpage)
+        )
+
     # Locate the rectangle that says "CATEGORY"
-    category_rect = None
-    for i in range(len(rectangle_layout) - 1, 0, -1):
-        for j, rect in enumerate(rectangle_layout[i]):
-            rect_text = plate.get_textbox(rect, textpage=textpage).strip()
-            if "CATEGORY" in rect_text:
-                category_rect = rect
+    if category_rect is None:
+        for i in range(len(rectangle_layout) - 1, 0, -1):
+            for rect in rectangle_layout[i]:
+                rect_text = rectangle_text_getter(rect, strip=True)
+                if "CATEGORY" in rect_text:
+                    category_rect = rect
 
     if category_rect is None:
         raise ValueError("Unable to find CATEGORY box")
@@ -340,7 +471,7 @@ def extract_minimums(
     category_boxes = []
     for i, letter in enumerate(CATEGORIES):
         letter_rect = rectangle_layout[0][i + 1]
-        letter_text = plate.get_textbox(letter_rect, textpage=textpage).strip()
+        letter_text = rectangle_text_getter(letter_rect, strip=True)
         if letter_text != letter:
             raise ValueError(
                 f"letter {i} after CATEGORY should be {letter}, was {letter_text}"
@@ -357,6 +488,17 @@ def extract_minimums(
     ]
     rectangle_layout = [row for row in rectangle_layout if len(row) > 0]
 
+    minimums_region = pymupdf.Rect(category_rect)
+    for row in rectangle_layout:
+        for rect in row:
+            minimums_region.x0 = min(minimums_region.x0, rect.x0)
+            minimums_region.y0 = min(minimums_region.y0, rect.y0)
+            minimums_region.x1 = max(minimums_region.x1, rect.x1)
+            minimums_region.y1 = max(minimums_region.y1, rect.y1)
+    minimums_words = plate.get_text("words", clip=minimums_region, sort=True)
+    minimums_rawdict = plate.get_text("rawdict", clip=minimums_region, sort=True)
+    minimums_chars = flatten_rawdict_chars(minimums_rawdict)
+
     # Grab the first approach name.
     all_minimums = []
     # First set of minimums are the default, no conditions.
@@ -367,7 +509,7 @@ def extract_minimums(
         # Should be the same size as the category cell and have some text.
         if int(approach_name_rect.width) != int(category_rect.width):
             break
-        approach_name = plate.get_textbox(approach_name_rect, textpage=textpage)
+        approach_name = rectangle_text_getter(approach_name_rect)
         if len(approach_name.strip()) == 0:
             break
         # Remove the Decision Altitude/Minimum Descent Altitude suffix, and fix
@@ -390,7 +532,11 @@ def extract_minimums(
         while num_minimums < 4:
             minimums_box = rectangle_layout[i][j + 1]
             minimums = extract_minimums_from_text_box(
-                minimums_box, approach_name, plate
+                minimums_box,
+                approach_name,
+                plate,
+                preextracted_words=minimums_words,
+                preextracted_chars=minimums_chars,
             )
             # Check the width of the minimums box to see how many categories it
             # covers.
@@ -422,18 +568,22 @@ MINIMUMS_TEXT_NEXT_LINE_THRESHOLD = 4
 FRACTION_HEIGHT_PERCENTAGE = 0.8
 
 
-def get_minimums_text_letters(box, plate):
+def get_minimums_text_letters(box, plate, preextracted_chars=None):
     # Gets the letters from a minimums box.
-    raw_text = plate.get_text(option="rawdict", clip=box)
-
-    letters = []
-    for block in raw_text["blocks"]:
-        for line in block["lines"]:
-            for span in line["spans"]:
-                for char in span["chars"]:
-                    letters.append(char)
+    if preextracted_chars is None:
+        raw_text = plate.get_text(option="rawdict", clip=box)
+        letters = flatten_rawdict_chars(raw_text)
+    else:
+        letters = [
+            char
+            for char in preextracted_chars
+            if (box.x0 - 0.5) <= char["origin"][0] <= (box.x1 + 0.5)
+            and (box.y0 - 0.5) <= char["origin"][1] <= (box.y1 + 0.5)
+        ]
 
     # Remove any characters that are very far apart vertically from the first line.
+    if not letters:
+        return []
     min_y = min(letter["origin"][1] for letter in letters)
     filtered_letters = []
     for letter in letters:
@@ -474,9 +624,18 @@ def get_minimums_text_letters(box, plate):
     return letters
 
 
-def extract_minimums_from_text_box(box, minimum_type, plate) -> ApproachMinimum:
+def extract_minimums_from_text_box(
+    box,
+    minimum_type,
+    plate,
+    preextracted_words=None,
+    preextracted_chars=None,
+) -> ApproachMinimum:
     # Check if the procedure is allowed for this category.
-    text = plate.get_text(option="text", clip=box).strip()
+    if preextracted_words is None:
+        text = plate.get_text(option="text", clip=box).strip()
+    else:
+        text = words_to_text(filter_words_in_rect(preextracted_words, box)).strip()
     if "NA" in text:
         return None
     # If the text "CAT" appears in the box, this is a special ILS cat approach,
@@ -484,7 +643,11 @@ def extract_minimums_from_text_box(box, minimum_type, plate) -> ApproachMinimum:
     if "CAT" in text:
         return "Unknown"
 
-    letters = get_minimums_text_letters(box, plate)
+    letters = get_minimums_text_letters(
+        box,
+        plate,
+        preextracted_chars=preextracted_chars,
+    )
     # Gets set to visibility or rvr depending on what we're expecting next.
     next_number = None
     altitude = ""
@@ -583,8 +746,10 @@ def is_waypoint_text_close_to_approach_type(waypoint_loc, approach_fixes):
     return is_close
 
 
-def extract_all_waypoints_from_plan_view(plan_view_box, plate):
-    words = plate.get_text(option="words", sort=True, clip=plan_view_box)
+def extract_all_waypoints_from_plan_view(plan_view_box, plate, plan_view_words=None):
+    words = plan_view_words
+    if words is None:
+        words = plate.get_text(option="words", sort=True, clip=plan_view_box)
 
     initial_approach_fix_texts = []
     intermediate_fix_texts = []
@@ -628,12 +793,14 @@ def extract_all_waypoints_from_plan_view(plan_view_box, plate):
     return waypoints
 
 
-def has_dme_arc_in_plan_view(plan_view_box, plate):
+def has_dme_arc_in_plan_view(plan_view_box, plate, plan_view_rawdict=None):
     """Look for the words 'Arc' in the plan view, this is slightly complicated
     by the fact that the words can be curved. This means we can't just use
     pymupdf's word extaction directly to find it.
     """
-    words = plate.get_text(option="rawdict", sort=True, clip=plan_view_box)
+    words = plan_view_rawdict
+    if words is None:
+        words = plate.get_text(option="rawdict", sort=True, clip=plan_view_box)
 
     letter_locations = collections.defaultdict(list)
 
@@ -650,13 +817,26 @@ def has_dme_arc_in_plan_view(plan_view_box, plate):
     if len(letter_locations["r"]) == 0 or len(letter_locations["c"]) == 0:
         return False
 
+    r_index = build_point_spatial_index(letter_locations["r"], cell_size=8)
+    c_index = build_point_spatial_index(letter_locations["c"], cell_size=8)
+
     # Iterate through all the 'A' characters.
     for a_location in letter_locations["A"]:
         # Check distances to the closest 'r' character.
-        closest_r = min([r.distance_to(a_location) for r in letter_locations["r"]])
+        closest_r = nearest_distance_from_spatial_index(
+            point=a_location,
+            spatial_index=r_index,
+            cell_size=8,
+            max_distance=6,
+        )
         if closest_r > 6:
             continue
-        closest_c = min([c.distance_to(a_location) for c in letter_locations["c"]])
+        closest_c = nearest_distance_from_spatial_index(
+            point=a_location,
+            spatial_index=c_index,
+            cell_size=8,
+            max_distance=8,
+        )
         if closest_c > 8:
             continue
         return True
@@ -688,13 +868,11 @@ def extract_vertical_profile_info(
     # --- VGSI Extraction (Line-based) ---
     # Use get_text("dict") to get line info, though blocks might be safer if lines split
     profile_dict = plate.get_text("dict", clip=profile_view_box, sort=True)
-    vgsi_pattern = re.compile(r"VGSI\s+Angle\s+(\d\.\d{2})/TCH\s+(\d+)", re.IGNORECASE)
-
     for block in profile_dict.get("blocks", []):
         for line in block.get("lines", []):
             line_text = "".join([span["text"] for span in line.get("spans", [])])
             if "VGSI Angle".lower() in line_text.lower():
-                vgsi_match = vgsi_pattern.search(line_text)
+                vgsi_match = VGSI_PATTERN.search(line_text)
                 if vgsi_match:
                     vgsi_angle = vgsi_match.group(1).strip()
                     vgsi_tch = vgsi_match.group(2).strip()
@@ -704,10 +882,6 @@ def extract_vertical_profile_info(
 
     # --- VDA Extraction (Positional Analysis) ---
     words = plate.get_text("words", clip=profile_view_box, sort=True)
-    # Pattern for VDA number like 3.00
-    vda_num_pattern = re.compile(r"^(\d\.\d{2})$")
-    # Pattern for VDA number followed immediately by degree symbol like 3.00°
-    vda_num_deg_pattern = re.compile(r"^(\d\.\d{2})°$")
     horizontal_closeness_threshold = 5
 
     for i, word_info in enumerate(words):
@@ -718,17 +892,17 @@ def extract_vertical_profile_info(
 
         # Case 1: Word is the number (e.g., "3.00") and the next word is "°"
         if (
-            vda_num_pattern.match(word_text)
+            VDA_NUM_PATTERN.match(word_text)
             and i + 1 < len(words)
             and words[i + 1][4] == "°"
         ):
-            potential_vda_match = vda_num_pattern.match(word_text)
+            potential_vda_match = VDA_NUM_PATTERN.match(word_text)
             num_word_info = word_info
             num_word_idx = i
 
         # Case 2: Word contains number and degree symbol (e.g., "3.00°")
-        elif vda_num_deg_pattern.match(word_text):
-            potential_vda_match = vda_num_deg_pattern.match(word_text)
+        elif VDA_NUM_DEG_PATTERN.match(word_text):
+            potential_vda_match = VDA_NUM_DEG_PATTERN.match(word_text)
             num_word_info = word_info
             num_word_idx = i
 
