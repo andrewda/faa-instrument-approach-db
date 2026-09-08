@@ -88,8 +88,9 @@ HIGH_ALTITUDE_APPROACH_TITLE_TYPES = {
 
 
 class MinimumsValue(BaseModel):
-    # e.g 3000 altitude 3/4 visibility
-    altitude_msl: str
+    # e.g 3000 altitude 3/4 visibility. CAT III minimums have no decision
+    # altitude (RVR only), so altitude_msl can be None.
+    altitude_msl: Optional[str]
     altitude_agl: Optional[str]
     rvr: Optional[str]
     visibility: Optional[str]

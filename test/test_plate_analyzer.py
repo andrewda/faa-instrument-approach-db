@@ -17,6 +17,8 @@ BROOKHAVEN_TEST_PLATE = TEST_DATA_DIR / "05603V6.pdf"
 ASPEN_TEST_PLATE = TEST_DATA_DIR / "05889LDE.pdf"
 CLINTON_TEST_PLATE = TEST_DATA_DIR / "00233R4L.PDF"
 CORVALLIS_TEST_PLATE = TEST_DATA_DIR / "00782IL17.PDF"
+EUGENE_CAT_2_3_TEST_PLATE = TEST_DATA_DIR / "00140I16RC2_3.PDF"
+EUGENE_SA_CAT_1_TEST_PLATE = TEST_DATA_DIR / "00140I16RSAC1.PDF"
 
 
 @pytest.fixture(scope="session")
@@ -511,3 +513,61 @@ def test_extract_gets_correct_vertical_profile_for_corvallis(corvallis_info):
     assert corvallis_info.vgsi_angle is None
     assert corvallis_info.vgsi_tch is None
     assert corvallis_info.vgsi_vda_not_coincident == False
+
+
+@pytest.fixture(scope="session")
+def eugene_cat_2_3_info():
+    return plate_analyzer.extract_information_from_plate(EUGENE_CAT_2_3_TEST_PLATE)
+
+
+def test_extract_gets_correct_title_for_eugene_cat_2_3(eugene_cat_2_3_info):
+    assert eugene_cat_2_3_info.approach_name == "ILS RWY 16R (CAT II & III)"
+    assert eugene_cat_2_3_info.airport_name == "MAHLON SWEET FLD (EUG)"
+
+
+def test_extract_gets_correct_minimums_for_eugene_cat_2_3(eugene_cat_2_3_info):
+    # The "CATEGORY II & III ILS - SPECIAL AIRCREW & AIRCRAFT CERTIFICATION
+    # REQUIRED" note at the bottom of the minimums section also contains the
+    # word CATEGORY and must not be mistaken for the category header.
+    assert len(eugene_cat_2_3_info.approach_minimums) == 2
+
+    cat_2_approach = eugene_cat_2_3_info.approach_minimums[0]
+    assert cat_2_approach.approach_type == "S-ILS 16R CAT II"
+    # "CAT II RA 108/12 100 DA 464": DH 108, RVR 1200, 100 above TDZE, DA 464.
+    assert cat_2_approach.cat_a.altitude_msl == "464"
+    assert cat_2_approach.cat_a.altitude_agl == "100"
+    assert cat_2_approach.cat_a.rvr == "12"
+    assert cat_2_approach.cat_a.visibility is None
+    # The CAT II box spans all four aircraft categories.
+    assert cat_2_approach.cat_b == cat_2_approach.cat_a
+    assert cat_2_approach.cat_c == cat_2_approach.cat_a
+    assert cat_2_approach.cat_d == cat_2_approach.cat_a
+
+    cat_3_approach = eugene_cat_2_3_info.approach_minimums[1]
+    assert cat_3_approach.approach_type == "S-ILS 16R CAT III"
+    # "CAT III RVR 06": RVR 600 and no decision altitude.
+    assert cat_3_approach.cat_a.altitude_msl is None
+    assert cat_3_approach.cat_a.altitude_agl is None
+    assert cat_3_approach.cat_a.rvr == "06"
+    assert cat_3_approach.cat_a.visibility is None
+    assert cat_3_approach.cat_b == cat_3_approach.cat_a
+
+
+@pytest.fixture(scope="session")
+def eugene_sa_cat_1_info():
+    return plate_analyzer.extract_information_from_plate(EUGENE_SA_CAT_1_TEST_PLATE)
+
+
+def test_extract_gets_correct_minimums_for_eugene_sa_cat_1(eugene_sa_cat_1_info):
+    # SA CAT I plates have a single, unlabeled minimums row in the same
+    # "RA <DH>/<RVR> <AHAT> DA <MSL>" format.
+    assert len(eugene_sa_cat_1_info.approach_minimums) == 1
+
+    sa_cat_1_approach = eugene_sa_cat_1_info.approach_minimums[0]
+    assert sa_cat_1_approach.approach_type == "S-ILS 16R"
+    # "RA 164/14 150 DA 514": DH 164, RVR 1400, 150 above TDZE, DA 514.
+    assert sa_cat_1_approach.cat_a.altitude_msl == "514"
+    assert sa_cat_1_approach.cat_a.altitude_agl == "150"
+    assert sa_cat_1_approach.cat_a.rvr == "14"
+    assert sa_cat_1_approach.cat_a.visibility is None
+    assert sa_cat_1_approach.cat_d == sa_cat_1_approach.cat_a

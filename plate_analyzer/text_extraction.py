@@ -18,8 +18,9 @@ class PlateComments:
 
 @dataclass
 class ApproachMinimum:
-    # e.g 3000 altitude 3/4 visibility
-    altitude_msl: str
+    # e.g 3000 altitude 3/4 visibility. CAT III minimums have no decision
+    # altitude (RVR only), so altitude_msl can be None.
+    altitude_msl: Optional[str]
     altitude_agl: Optional[str]
     rvr: Optional[str]
     visibility: Optional[str]
@@ -432,16 +433,23 @@ def extract_text_from_segmented_plate(
             pymupdf_extracted_words_to_string(required_equipment_text),
         )
 
-    # Find CATEGORY rectangle once and reuse.
+    # Find CATEGORY rectangle once and reuse. CAT II/III and SA CAT plates
+    # have a bottom note like "CATEGORY II & III ILS - SPECIAL AIRCREW &
+    # AIRCRAFT CERTIFICATION REQUIRED" that also contains the word CATEGORY,
+    # so prefer the exact header cell and only fall back to the last (topmost)
+    # substring match if no exact cell exists.
     category_rect = None
+    found_exact_category_header = False
     for i in range(len(rectangle_layout) - 1, 0, -1):
         for rect in rectangle_layout[i]:
             rect_text = rectangle_text(rect, strip=True)
             if "CATEGORY" not in rect_text:
                 continue
             category_rect = rect
-            break
-        if category_rect is not None:
+            if rect_text == "CATEGORY":
+                found_exact_category_header = True
+                break
+        if found_exact_category_header:
             break
 
     try:
@@ -636,6 +644,20 @@ def extract_minimums(
         ):
             approach_name = "CIRCLING (Expanded Radius)"
 
+        # CAT II/III and SA CAT I/II plates repeat the same approach-name cell
+        # for every minimums row; the row's category is labeled inside the
+        # value cells (e.g. "CAT II RA 110/12 100 DA 754"). Append the label so
+        # the rows are distinguishable.
+        for value_rect in rectangle_layout[i][1:]:
+            label_match = CAT_MINIMUMS_LABEL_PATTERN.search(
+                rectangle_text_getter(value_rect)
+            )
+            if label_match is not None:
+                approach_name = (
+                    f"{approach_name} {' '.join(label_match.group(0).split())}"
+                )
+                break
+
         minimums_per_category = []
         # Now iterate through the minimums values, up to 4 boxes.
         num_minimums = 0
@@ -688,6 +710,60 @@ MINIMUMS_TEXT_NEXT_LINE_THRESHOLD = 4
 # At what percentage of a character's height is a number considered a small
 # fraction character.
 FRACTION_HEIGHT_PERCENTAGE = 0.8
+
+# CAT I/II/III and SA CAT I/II minimums (on plates titled e.g. "(CAT II & III)"
+# or "(SA CAT I)") use a different format from the regular DA/MDA boxes, e.g.:
+#   "CAT II RA 110/12 100 DA 754"  (DH 110 RA, RVR 1200, 100 above TDZE, DA 754)
+#   "CAT III RVR 06"               (RVR 600, no decision altitude)
+#   "RA 164/14 150 DA 514"         (SA CAT I; single-category plates are unlabeled)
+# The pieces can appear in any order, and the category label may sit between
+# the other values, so each component is matched independently.
+CAT_MINIMUMS_RA_PATTERN = re.compile(r"\bRA\s*(\d+)\s*/\s*(\d+)\b")
+CAT_MINIMUMS_DA_PATTERN = re.compile(r"\bDA\s*(\d+)\b")
+CAT_MINIMUMS_RVR_PATTERN = re.compile(r"\bRVR\s*(\d+)\b")
+CAT_MINIMUMS_LABEL_PATTERN = re.compile(r"\b(?:SA\s+)?CAT\s+I{1,3}\b")
+
+
+def extract_cat_minimums_from_text(text) -> Optional[ApproachMinimum]:
+    """Parse CAT I/II/III and SA CAT I/II minimums text.
+
+    Returns None if the text does not look like the CAT minimums format, so
+    regular minimums boxes fall through to the default parser. The DH (RA)
+    value is not stored separately: it approximates the height above the
+    touchdown zone, which is already captured as `altitude_agl`.
+    """
+    normalized = " ".join(text.split())
+    ra_match = CAT_MINIMUMS_RA_PATTERN.search(normalized)
+    da_match = CAT_MINIMUMS_DA_PATTERN.search(normalized)
+    rvr_match = CAT_MINIMUMS_RVR_PATTERN.search(normalized)
+    if ra_match is None and da_match is None and rvr_match is None:
+        return None
+
+    altitude_msl = da_match.group(1) if da_match is not None else None
+    if ra_match is not None:
+        # "RA <DH>/<RVR>", e.g. "RA 110/12".
+        rvr = ra_match.group(2)
+    elif rvr_match is not None:
+        # "RVR <RVR>", e.g. "RVR 06" (CAT III).
+        rvr = rvr_match.group(1)
+    else:
+        rvr = None
+
+    # The remaining standalone number (if any) is the height above the
+    # touchdown zone, e.g. the "100" in "RA 108/12 100 CAT II DA 464".
+    remainder = normalized
+    for match in (ra_match, da_match, rvr_match):
+        if match is not None:
+            remainder = remainder.replace(match.group(0), " ", 1)
+    ahats = re.findall(r"\b\d{2,3}\b", remainder)
+    altitude_agl = ahats[0] if ahats else None
+
+    return ApproachMinimum(
+        altitude_msl=altitude_msl,
+        altitude_agl=altitude_agl,
+        rvr=rvr,
+        visibility=None,
+    )
 
 
 def get_minimums_text_letters(box, plate, preextracted_chars=None):
@@ -756,16 +832,30 @@ def extract_minimums_from_text_box(
     # Check if the procedure is allowed for this category.
     if preextracted_words is None:
         text = plate.get_text(option="text", clip=box).strip()
+        cat_text = text
     else:
-        text = words_to_text(filter_words_in_rect(preextracted_words, box)).strip()
+        box_words = filter_words_in_rect(preextracted_words, box)
+        text = words_to_text(box_words).strip()
+        # Tightly-stacked minimums rows can bleed words from the row above
+        # into this box: the any-overlap filter is generous with tall word
+        # bounding boxes. For the CAT-format parser, keep only words whose
+        # vertical center lies inside the box.
+        cat_text = words_to_text(
+            [word for word in box_words if box.y0 <= (word[1] + word[3]) / 2 <= box.y1]
+        ).strip()
     # Empty category cells can occur when minimums are only defined for some
     # approach categories.
     if len(text) == 0:
         return None
     if "NA" in text:
         return None
-    # If the text "CAT" appears in the box, this is a special ILS cat approach,
-    # we don't handle that format of minimums yet.
+    # CAT I/II/III and SA CAT I/II minimums use a different format from the
+    # regular DA/MDA boxes (see extract_cat_minimums_from_text).
+    cat_minimum = extract_cat_minimums_from_text(cat_text)
+    if cat_minimum is not None:
+        return cat_minimum
+    # If the text "CAT" appears in the box, this is a special ILS cat approach
+    # format we don't understand yet.
     if "CAT" in text:
         return "Unknown"
 
