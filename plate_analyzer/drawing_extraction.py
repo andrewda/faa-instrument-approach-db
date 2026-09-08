@@ -4,6 +4,7 @@ bits of information.
 """
 
 import random
+import math
 
 import pymupdf
 import numpy as np
@@ -54,7 +55,9 @@ def extract_approach_metadata(plan_view_box, plate, drawings, debug=False):
         # the final point of the last bezier curve.
         curve_start = path["items"][0][1]
         curve_end = path["items"][-1][4]
-        curve_distance = curve_start.distance_to(curve_end)
+        curve_distance = math.hypot(
+            curve_start[0] - curve_end[0], curve_start[1] - curve_end[1]
+        )
         # Filter out any arcs that are too small or too large.
         if curve_distance < 10 or curve_distance > 50:
             continue
@@ -62,28 +65,31 @@ def extract_approach_metadata(plan_view_box, plate, drawings, debug=False):
 
         # Also add a rounded version of the curve start and end points for when
         # we check the interception.
-        bezier_curve_locations.add(
-            pymupdf.Point(round(curve_start.x, 1), round(curve_start.y, 1))
-        )
-        bezier_curve_locations.add(
-            pymupdf.Point(round(curve_end.x, 1), round(curve_end.y, 1))
-        )
+        bezier_curve_locations.add((round(curve_start[0], 1), round(curve_start[1], 1)))
+        bezier_curve_locations.add((round(curve_end[0], 1), round(curve_end[1], 1)))
         if debug:
             debug_curves.extend(path["items"])
     # Draw out a perpendicular line from each end of the arc-diameter lines and
     # check if they intercept any other bezier_curve_locations.
+    bezier_curve_location_arrays = [
+        np.array(location) for location in bezier_curve_locations
+    ]
     for line in arc_diameter_lines:
         perp_line_1, perp_line_2 = get_i_beam_from_line(line)
 
         # Calculate shortest distance from perp_line_1 and perp_line_2 to
         # every bezier_curve_location. If it intercepts a bezier curve location
         # then we consider it to be a race-track.
-        for curve_loc in bezier_curve_locations:
+        for curve_loc, curve_loc_array in zip(
+            bezier_curve_locations, bezier_curve_location_arrays
+        ):
             # Ignore the curve locations that are on this arc line itself.
-            if curve_loc.distance_to(line[0]) < 2 or curve_loc.distance_to(line[1]) < 2:
+            if (
+                math.hypot(curve_loc[0] - line[0][0], curve_loc[1] - line[0][1]) < 2
+                or math.hypot(curve_loc[0] - line[1][0], curve_loc[1] - line[1][1]) < 2
+            ):
                 continue
             # Calculate distance between perp lines and the point.
-            curve_loc_array = np.array([curve_loc.x, curve_loc.y])
             perp_line_1_distance = line_distance_to_point(perp_line_1, curve_loc_array)
             perp_line_2_distance = line_distance_to_point(perp_line_2, curve_loc_array)
             if perp_line_1_distance < 0.75 or perp_line_2_distance < 0.75:
@@ -123,7 +129,7 @@ def extract_approach_metadata(plan_view_box, plate, drawings, debug=False):
 
         for item in path["items"]:
             line = (item[1], item[2])
-            line_distance = item[1].distance_to(item[2])
+            line_distance = math.hypot(item[1][0] - item[2][0], item[1][1] - item[2][1])
 
             # Barb triangle base between around 4.8
             if abs(line_distance - 4.8) < 0.6:
@@ -132,8 +138,8 @@ def extract_approach_metadata(plan_view_box, plate, drawings, debug=False):
                     arc_diameter_lines.append(line)
             # Barb triangle hypotenuse around 9
             if abs(line_distance - 9) < 1:
-                p1 = (round(item[1].x, 0), round(item[1].y, 0))
-                p2 = (round(item[2].x, 0), round(item[2].y, 0))
+                p1 = (round(item[1][0], 0), round(item[1][1], 0))
+                p2 = (round(item[2][0], 0), round(item[2][1], 0))
 
                 hypotenuse_candidates[p1] = line
                 hypotenuse_candidates[p2] = line
@@ -142,8 +148,8 @@ def extract_approach_metadata(plan_view_box, plate, drawings, debug=False):
                     debug_lines.append(line)
     # Iterate over the bases and see if they intersect with any hypotenus.
     for base_p1, base_p2 in base_candidates:
-        rounded_base_p1 = (round(base_p1.x, 0), round(base_p1.y, 0))
-        rounded_base_p2 = (round(base_p2.x, 0), round(base_p2.y, 0))
+        rounded_base_p1 = (round(base_p1[0], 0), round(base_p1[1], 0))
+        rounded_base_p2 = (round(base_p2[0], 0), round(base_p2[1], 0))
 
         hypotenuse = None
         if rounded_base_p1 in hypotenuse_candidates:
@@ -153,9 +159,12 @@ def extract_approach_metadata(plan_view_box, plate, drawings, debug=False):
         else:
             continue
 
-        base_line = np.array([base_p2.x - base_p1.x, base_p2.y - base_p1.y])
+        base_line = np.array([base_p2[0] - base_p1[0], base_p2[1] - base_p1[1]])
         hypotenuse_line = np.array(
-            [hypotenuse[1].x - hypotenuse[0].x, hypotenuse[1].y - hypotenuse[0].y]
+            [
+                hypotenuse[1][0] - hypotenuse[0][0],
+                hypotenuse[1][1] - hypotenuse[0][1],
+            ]
         )
 
         # Calculate angle between hypotenuse and base line.
@@ -209,7 +218,9 @@ def extract_approach_metadata(plan_view_box, plate, drawings, debug=False):
             shape.finish(color=(1, 0.5, 0.5))
             shape.draw_line(hypotenuse[0], hypotenuse[1])
             shape.finish(color=(0.5, 0.5, 1))
-            outpage.insert_text(base[0] + pymupdf.Point(2, 2), "A: " + str(int(angle)))
+            outpage.insert_text(
+                (base[0][0] + 2, base[0][1] + 2), "A: " + str(int(angle))
+            )
 
         shape.commit()
         outpage.get_pixmap(dpi=400).save("drawings.png")
@@ -235,8 +246,8 @@ def get_i_beam_from_line(line):
         ret[1]
     """
     (point1, point2) = line
-    point1_vec = np.array([point1.x, point1.y])
-    point2_vec = np.array([point2.x, point2.y])
+    point1_vec = np.array([point1[0], point1[1]])
+    point2_vec = np.array([point2[0], point2[1]])
 
     vec = point2_vec - point1_vec
 

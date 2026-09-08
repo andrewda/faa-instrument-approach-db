@@ -1,4 +1,5 @@
 -r requirements.txt
+-r scrape_faa/requirements.txt
 
 pytest==8.3.1
 black==24.4.2
