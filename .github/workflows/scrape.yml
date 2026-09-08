@@ -33,6 +33,12 @@ jobs:
       run: |
         python approach_plate_extract.py scrape_faa/download scrape_faa/download/FAACIFP18
 
+    - name: Upload approaches.json artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: approaches
+        path: approaches.json
+
     - name: Create Release
       run: |
         gh release create ${{ steps.scrape_faa.outputs.release }} approaches.json
