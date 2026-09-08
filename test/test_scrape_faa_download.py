@@ -1,6 +1,7 @@
-from datetime import datetime
 import threading
 import time
+
+import pytest
 
 from scrape_faa import download
 
@@ -32,44 +33,57 @@ class FakeSession:
         return None
 
 
-def test_get_latest_release_number_uses_page_timestamps(monkeypatch):
+def test_get_latest_release_number_iis_style_listing():
+    # Mirrors the real FAA directory listing: an IIS-style <pre> block where
+    # each entry's timestamp precedes its link and entries are separated by
+    # <br> tags. The "CIFP Readme.pdf" entry carries the newest page date.
+    html = """
+    <html><head><title>aeronav.faa.gov - /Upload_313-d/cifp/</title></head><body>
+    <pre><A HREF="/Upload_313-d/">[To Parent Directory]</A><br><br> 8/12/2026 12:43 PM       245900 <A HREF="/Upload_313-d/cifp/CIFP%20Readme.pdf">CIFP Readme.pdf</A><br>  1/2/2025  8:35 AM      8717897 <A HREF="/Upload_313-d/cifp/CIFP_250123.zip">CIFP_250123.zip</A><br> 1/30/2025  9:00 AM      8718931 <A HREF="/Upload_313-d/cifp/CIFP_250220.zip">CIFP_250220.zip</A><br> 8/12/2026  2:46 PM      9109532 <A HREF="/Upload_313-d/cifp/CIFP_260903.zip">CIFP_260903.zip</A><br></pre>
+    </body></html>
+    """
+    session = FakeSession({download.CIFP_URL: html})
+
+    assert download.get_latest_release_number(session=session) == "260903"
+
+
+def test_get_latest_release_number_ignores_listing_order():
     html = """
     <html><body><pre>
-    <a href="CIFP_250101.zip">CIFP_250101.zip</a> 2025-01-01 10:00
-    <a href="CIFP_250102.zip">CIFP_250102.zip</a> 2025-01-02 09:00
+    8/12/2026  2:46 PM      9109532 <A HREF="/Upload_313-d/cifp/CIFP_260903.zip">CIFP_260903.zip</A><br>
+    1/2/2025  8:35 AM      8717897 <A HREF="/Upload_313-d/cifp/CIFP_250123.zip">CIFP_250123.zip</A><br>
+    7/16/2026  7:30 AM      9098117 <A HREF="/Upload_313-d/cifp/CIFP_260806.zip">CIFP_260806.zip</A><br>
     </pre></body></html>
     """
     session = FakeSession({download.CIFP_URL: html})
 
-    def fail_head_request(url):
-        raise AssertionError(f"unexpected HEAD fallback for {url}")
-
-    monkeypatch.setattr(download, "get_file_timestamp", fail_head_request)
-
-    assert download.get_latest_release_number(session=session) == "250102"
+    assert download.get_latest_release_number(session=session) == "260903"
 
 
-def test_get_latest_release_number_falls_back_to_head(monkeypatch):
+def test_get_latest_release_number_no_cifp_zips():
     html = """
     <html><body><pre>
-    <a href="CIFP_250101.zip">CIFP_250101.zip</a>
-    <a href="CIFP_250102.zip">CIFP_250102.zip</a>
+    <A HREF="/Upload_313-d/">[To Parent Directory]</A><br><br>
+    8/12/2026 12:43 PM       245900 <A HREF="/Upload_313-d/cifp/CIFP%20Readme.pdf">CIFP Readme.pdf</A><br>
+    </body></html>
+    """
+    session = FakeSession({download.CIFP_URL: html})
+
+    with pytest.raises(ValueError, match="No CIFP zip links found"):
+        download.get_latest_release_number(session=session)
+
+
+def test_get_latest_release_number_ignores_non_conforming_names():
+    html = """
+    <html><body><pre>
+    1/2/2025  8:35 AM      8717897 <A HREF="/Upload_313-d/cifp/CIFP_250123.zip">CIFP_250123.zip</A><br>
+    8/12/2026  2:46 PM      9109532 <A HREF="/Upload_313-d/cifp/CIFP_latest.zip">CIFP_latest.zip</A><br>
+    8/12/2026  2:46 PM      9109532 <A HREF="/Upload_313-d/cifp/CIFP_250123_backup.zip">CIFP_250123_backup.zip</A><br>
     </pre></body></html>
     """
     session = FakeSession({download.CIFP_URL: html})
 
-    requested = []
-
-    def fake_head_timestamp(url):
-        requested.append(url)
-        if "250101" in url:
-            return datetime(2025, 1, 1, 10, 0)
-        return datetime(2025, 1, 2, 9, 0)
-
-    monkeypatch.setattr(download, "get_file_timestamp", fake_head_timestamp)
-
-    assert download.get_latest_release_number(session=session) == "250102"
-    assert len(requested) == 2
+    assert download.get_latest_release_number(session=session) == "250123"
 
 
 def test_download_dtpp_zips_parallel_workers(monkeypatch, tmp_path):

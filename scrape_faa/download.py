@@ -2,7 +2,6 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 import argparse
@@ -11,6 +10,7 @@ import re
 
 CIFP_URL = "https://aeronav.faa.gov/Upload_313-d/cifp/"
 DTPP_URL = "https://aeronav.faa.gov/upload_313-d/terminal/"
+CIFP_ZIP_NAME_PATTERN = re.compile(r"^CIFP_(\d{6})\.zip$")
 DEFAULT_TIMEOUT = 10
 DEFAULT_DOWNLOAD_WORKERS = 8
 CHUNK_SIZE_BYTES = 1024 * 20
@@ -20,30 +20,7 @@ def _create_session() -> requests.Session:
     return requests.Session()
 
 
-def _extract_timestamp_from_link(link) -> Optional[datetime]:
-    next_sibling_text = ""
-    if isinstance(link.next_sibling, str):
-        next_sibling_text = link.next_sibling
-
-    text_candidates = [next_sibling_text, link.parent.get_text(" ", strip=True)]
-    date_patterns = (
-        (r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}", "%Y-%m-%d %H:%M"),
-        (r"\d{2}-[A-Za-z]{3}-\d{4}\s+\d{2}:\d{2}", "%d-%b-%Y %H:%M"),
-        (r"\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s+[AP]M", "%m/%d/%Y %I:%M %p"),
-    )
-    for text in text_candidates:
-        for regex_pattern, datetime_pattern in date_patterns:
-            match = re.search(regex_pattern, text)
-            if not match:
-                continue
-            try:
-                return datetime.strptime(match.group(0), datetime_pattern)
-            except ValueError:
-                continue
-    return None
-
-
-def _fetch_zip_links_with_timestamps(base_url: str, html_text: str):
+def _fetch_zip_links(base_url: str, html_text: str):
     soup = BeautifulSoup(html_text, "html.parser")
     zip_links = []
     for link in soup.find_all("a", href=True):
@@ -51,13 +28,7 @@ def _fetch_zip_links_with_timestamps(base_url: str, html_text: str):
         if not href.endswith(".zip"):
             continue
         file_name = os.path.basename(href)
-        zip_links.append(
-            (
-                file_name,
-                urljoin(base_url, href),
-                _extract_timestamp_from_link(link),
-            )
-        )
+        zip_links.append((file_name, urljoin(base_url, href)))
     return zip_links
 
 
@@ -75,52 +46,21 @@ def get_latest_release_number(session: Optional[requests.Session] = None) -> str
 
     try:
         print("Parsing HTML content...")
-        zip_files_with_timestamps = [
-            (name, zip_url, timestamp)
-            for name, zip_url, timestamp in _fetch_zip_links_with_timestamps(
-                CIFP_URL, response.text
-            )
-            if name.startswith("CIFP_")
-        ]
-        if not zip_files_with_timestamps:
+        # CIFP zip file names embed the AIRAC cycle date, e.g. CIFP_250123.zip
+        # for the 2025-01-23 cycle, so the latest release is the one with the
+        # maximum cycle date. The six-digit cycles are zero-padded, so they
+        # sort identically as strings and as dates.
+        cifp_zips = []
+        for name, _ in _fetch_zip_links(CIFP_URL, response.text):
+            match = CIFP_ZIP_NAME_PATTERN.match(name)
+            if match is not None:
+                cifp_zips.append((match.group(1), name))
+        if not cifp_zips:
             raise ValueError("No CIFP zip links found")
 
-        missing_timestamp_links = [
-            (name, zip_url)
-            for name, zip_url, timestamp in zip_files_with_timestamps
-            if timestamp is None
-        ]
-        if missing_timestamp_links:
-            with ThreadPoolExecutor(
-                max_workers=min(DEFAULT_DOWNLOAD_WORKERS, len(missing_timestamp_links))
-            ) as executor:
-                resolved_timestamps = list(
-                    executor.map(
-                        get_file_timestamp,
-                        [file_info[1] for file_info in missing_timestamp_links],
-                    )
-                )
-
-            timestamp_by_name = {
-                name: timestamp
-                for (name, _), timestamp in zip(
-                    missing_timestamp_links, resolved_timestamps
-                )
-            }
-            zip_files_with_timestamps = [
-                (
-                    name,
-                    zip_url,
-                    timestamp_by_name.get(name, timestamp),
-                )
-                for name, zip_url, timestamp in zip_files_with_timestamps
-            ]
-
-        zip_files_with_timestamps.sort(key=lambda x: x[2], reverse=True)
-        latest_zip_file = zip_files_with_timestamps[0][0]
+        latest_cycle, latest_zip_file = max(cifp_zips)
         print(f"Latest CIFP file found: {latest_zip_file}")
-        # Convert CIFP_250123.zip to 250123
-        return latest_zip_file.replace("CIFP_", "").replace(".zip", "")
+        return latest_cycle
     finally:
         if own_session:
             session.close()
@@ -207,9 +147,7 @@ def download_dtpp_zips(
         zip_links = sorted(
             {
                 zip_url
-                for name, zip_url, _ in _fetch_zip_links_with_timestamps(
-                    DTPP_URL, response.text
-                )
+                for name, zip_url in _fetch_zip_links(DTPP_URL, response.text)
                 if release_number in name
             }
         )
@@ -242,16 +180,6 @@ def download_dtpp_zips(
     finally:
         if own_session:
             session.close()
-
-
-# Function to get the timestamp of a file using the 'Last-Modified' header
-def get_file_timestamp(url):
-    # Send a HEAD request to get the headers of the file
-    response = requests.head(url, timeout=DEFAULT_TIMEOUT)
-    response.raise_for_status()
-    return datetime.strptime(
-        response.headers["Last-Modified"], "%a, %d %b %Y %H:%M:%S %Z"
-    )
 
 
 if __name__ == "__main__":
