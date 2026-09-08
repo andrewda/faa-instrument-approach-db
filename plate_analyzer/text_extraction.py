@@ -89,12 +89,28 @@ def rect_to_cache_key(rect: pymupdf.Rect) -> Tuple[float, float, float, float]:
 
 
 def build_rectangle_text_cache(
-    rectangle_layout: List[List[pymupdf.Rect]], plate: pymupdf.Page, textpage
+    rectangle_layout: List[List[pymupdf.Rect]], plate: pymupdf.Page, textpage,
+    all_words=None,
 ) -> Dict[Tuple[float, float, float, float], str]:
+    if all_words is None:
+        all_words = plate.get_text("words", textpage=textpage, sort=True)
+
     cache = {}
     for row in rectangle_layout:
         for rect in row:
-            cache[rect_to_cache_key(rect)] = plate.get_textbox(rect, textpage=textpage)
+            words = filter_words_by_strict_overlap(all_words, rect)
+            seen = set()
+            lines = collections.OrderedDict()
+            for word in words:
+                key = (word[4], round(word[0], 1), round(word[1], 1))
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.setdefault((word[5], word[6]), []).append(word)
+            cache[rect_to_cache_key(rect)] = "\n".join(
+                " ".join(word[4].strip() for word in sorted(line, key=lambda w: w[0]))
+                for line in lines.values()
+            )
     return cache
 
 
@@ -125,6 +141,41 @@ def filter_words_in_rect(words, rect: pymupdf.Rect):
         word
         for word in words
         if rect_overlaps_bbox(rect, (word[0], word[1], word[2], word[3]), tolerance=1.0)
+    ]
+
+
+def filter_words_by_strict_overlap(words, rect: pymupdf.Rect):
+    """Match get_textbox's strict per-character rectangle overlap rule."""
+    return [
+        word
+        for word in words
+        if not (
+            word[0] >= rect.x1
+            or word[1] >= rect.y1
+            or word[2] <= rect.x0
+            or word[3] <= rect.y0
+        )
+    ]
+
+
+def filter_segment_words(words, rect: pymupdf.Rect):
+    # PyMuPDF keeps a word from a clipped extraction when at least half of
+    # its area intersects the clip. Preserve the full extraction's order.
+    filtered = []
+    for word in words:
+        word_rect = pymupdf.Rect(word[:4])
+        intersection = word_rect & rect
+        if intersection.get_area() >= word_rect.get_area() * 0.5:
+            filtered.append(word)
+    return filtered
+
+
+def filter_chars_by_origin(chars, rect: pymupdf.Rect):
+    return [
+        char
+        for char in chars
+        if (rect.x0 - 0.5) <= char["origin"][0] <= (rect.x1 + 0.5)
+        and (rect.y0 - 0.5) <= char["origin"][1] <= (rect.y1 + 0.5)
     ]
 
 
@@ -194,8 +245,17 @@ def extract_text_from_segmented_plate(
             previous_y = rectangle_y
         rectangle_layout[-1].append(r)
 
+    # Reuse one full-page words extraction for every rectangular text query.
+    all_words = plate.get_text("words", textpage=textpage, sort=True)
+    all_chars = flatten_rawdict_chars(
+        plate.get_text("rawdict", textpage=textpage, sort=True)
+    )
+
     rectangle_text_cache = build_rectangle_text_cache(
-        rectangle_layout=rectangle_layout, plate=plate, textpage=textpage
+        rectangle_layout=rectangle_layout,
+        plate=plate,
+        textpage=textpage,
+        all_words=all_words,
     )
 
     def rectangle_text(rect: pymupdf.Rect, strip: bool = False):
@@ -208,7 +268,10 @@ def extract_text_from_segmented_plate(
     # Some RNP approaches do not have a channel/ILS box on the top-left
     if len(rectangle_layout[0]) == 2:
         approach_course_box = rectangle_layout[0][0]
-    approach_text = rectangle_text(approach_course_box).replace("APP CRS", "").strip()
+    # One legacy curved-text course box has source-word line order unlike
+    # get_textbox; preserve that exact result without affecting the cache.
+    approach_text = plate.get_textbox(approach_course_box, textpage=textpage)
+    approach_text = approach_text.replace("APP CRS", "").strip()
 
     # Approach title will be on the right side of the page, after the approach
     # course and info boxes on the left.
@@ -216,7 +279,7 @@ def extract_text_from_segmented_plate(
         rectangle_layout[0][-1].top_right + pymupdf.Point(30, 0),
         pymupdf.Point(plate.rect.width, rectangle_layout[0][-1].bottom_right.y),
     )
-    approach_title = plate.get_text(option="words", sort=True, clip=approach_title_area)
+    approach_title = filter_segment_words(all_words, approach_title_area)
     approach_title = pymupdf_group_words_into_lines_based_on_vertical_position(
         approach_title
     )
@@ -245,8 +308,8 @@ def extract_text_from_segmented_plate(
 
     # Get all the waypoints in the plan view.
     plan_view_box = find_plan_view_box(rectangle_layout, plate)
-    plan_view_words = plate.get_text(option="words", sort=True, clip=plan_view_box)
-    plan_view_rawdict = plate.get_text(option="rawdict", sort=True, clip=plan_view_box)
+    plan_view_words = filter_segment_words(all_words, plan_view_box)
+    plan_view_rawdict = filter_chars_by_origin(all_chars, plan_view_box)
     waypoints = extract_all_waypoints_from_plan_view(
         plan_view_box,
         plate,
@@ -313,6 +376,9 @@ def extract_text_from_segmented_plate(
     # things like:
     #   'direct CELSY and hold.  \nMISSED APPROACH: Climb to 4200'.
     # Therefore, re-extract the text with sorting.
+    # Keep the original clipped extraction for this irregularly ordered box;
+    # unlike the other word regions, its fixture output depends on a fresh
+    # clipped text page's ordering.
     missed_approach_text = plate.get_text(
         option="words", sort=True, clip=missed_approach_rect
     )
@@ -326,7 +392,9 @@ def extract_text_from_segmented_plate(
     left_side_comments = pymupdf.Rect(
         comments_box.top_left, comments_box.bottom_left + pymupdf.Point(10, 0)
     )
-    left_side_text = plate.get_textbox(rect=left_side_comments, textpage=textpage)
+    left_side_text = words_to_text(
+        filter_segment_words(all_words, left_side_comments)
+    )
     if "A" in left_side_text:
         non_standard_takeoff_minimums = True
     if "T" in left_side_text:
@@ -335,7 +403,10 @@ def extract_text_from_segmented_plate(
     right_side_comments = pymupdf.Rect(
         left_side_comments.top_right, comments_box.bottom_right
     )
-    comments_text = plate.get_text(option="words", sort=True, clip=right_side_comments)
+    # Same legacy ordering exception as the missed-approach box above.
+    comments_text = plate.get_text(
+        option="words", sort=True, clip=right_side_comments
+    )
     comments_text = pymupdf_extracted_words_to_string(comments_text)
     # Remove solitary As and Ts from the start and end of comments. More than
     # likely just accidentally included the alternatives symbols.
@@ -349,8 +420,8 @@ def extract_text_from_segmented_plate(
     )
 
     if required_equipment:
-        required_equipment_text = plate.get_text(
-            option="words", sort=True, clip=required_equipment
+        required_equipment_text = filter_segment_words(
+            all_words, required_equipment
         )
         required_equipment = (
             required_equipment,
@@ -376,6 +447,8 @@ def extract_text_from_segmented_plate(
             textpage=textpage,
             rectangle_text_getter=rectangle_text,
             category_rect=category_rect,
+            preextracted_words=all_words,
+            preextracted_chars=all_chars,
         )
     except ValueError:
         minimums = []
@@ -400,7 +473,13 @@ def extract_text_from_segmented_plate(
 
     # Extract VDA and TCH from the profile view
     vda, tch, vgsi_angle, vgsi_tch, vgsi_vda_not_coincident = (
-        extract_vertical_profile_info(plate, profile_view_box)
+        extract_vertical_profile_info(
+            plate,
+            profile_view_box,
+            words=filter_segment_words(all_words, profile_view_box)
+            if profile_view_box
+            else None,
+        )
     )
 
     return SegmentedPlate(
@@ -442,6 +521,8 @@ def extract_minimums(
     textpage,
     rectangle_text_getter=None,
     category_rect: Optional[pymupdf.Rect] = None,
+    preextracted_words=None,
+    preextracted_chars=None,
 ) -> List[ApproachCategory]:
     if rectangle_text_getter is None:
         rectangle_text_getter = lambda rect, strip=False: (
@@ -508,9 +589,20 @@ def extract_minimums(
             minimums_region.y0 = min(minimums_region.y0, rect.y0)
             minimums_region.x1 = max(minimums_region.x1, rect.x1)
             minimums_region.y1 = max(minimums_region.y1, rect.y1)
-    minimums_words = plate.get_text("words", clip=minimums_region, sort=True)
-    minimums_rawdict = plate.get_text("rawdict", clip=minimums_region, sort=True)
-    minimums_chars = flatten_rawdict_chars(minimums_rawdict)
+    if preextracted_words is None:
+        minimums_words = plate.get_text("words", clip=minimums_region, sort=True)
+    else:
+        minimums_words = filter_segment_words(
+            preextracted_words, minimums_region
+        )
+        # A full-page sorted word list can place adjacent minimums lines in
+        # source order rather than the clipped extractor's visual order.
+        minimums_words.sort(key=lambda word: (word[1], word[0]))
+    if preextracted_chars is None:
+        minimums_rawdict = plate.get_text("rawdict", clip=minimums_region, sort=True)
+        minimums_chars = flatten_rawdict_chars(minimums_rawdict)
+    else:
+        minimums_chars = filter_chars_by_origin(preextracted_chars, minimums_region)
 
     # Grab the first approach name.
     all_minimums = []
@@ -742,6 +834,14 @@ def pymupdf_extracted_words_to_string(words):
     return " ".join([w[4].strip() for w in words])
 
 
+def pymupdf_group_words_into_source_lines(words):
+    """Join words using PyMuPDF's source block/line identity."""
+    lines = collections.OrderedDict()
+    for word in words:
+        lines.setdefault((word[5], word[6]), []).append(word[4].strip())
+    return [" ".join(line) for line in lines.values()]
+
+
 def pymupdf_group_words_into_lines_based_on_vertical_position(words):
     """Joins a list of extracted words into lines as above but returns a list
     of lines, grouping them based on their y-coordinate."""
@@ -829,19 +929,19 @@ def has_dme_arc_in_plan_view(plan_view_box, plate, plan_view_rawdict=None):
     """
     words = plan_view_rawdict
     if words is None:
-        words = plate.get_text(option="rawdict", sort=True, clip=plan_view_box)
+        words = flatten_rawdict_chars(
+            plate.get_text(option="rawdict", sort=True, clip=plan_view_box)
+        )
+    elif isinstance(words, dict):
+        # Accept the legacy rawdict shape for direct callers as well.
+        words = flatten_rawdict_chars(words)
 
     letter_locations = collections.defaultdict(list)
 
-    for block in words["blocks"]:
-        for line in block["lines"]:
-            for span in line["spans"]:
-                for char in span["chars"]:
-                    # Note the locations of all 'A', 'r' and 'c' characters.
-                    if char["c"] in ("A", "r", "c"):
-                        letter_locations[char["c"]].append(
-                            pymupdf.Point(char["origin"])
-                        )
+    for char in words:
+        # Note the locations of all 'A', 'r' and 'c' characters.
+        if char["c"] in ("A", "r", "c"):
+            letter_locations[char["c"]].append(pymupdf.Point(char["origin"]))
 
     if len(letter_locations["r"]) == 0 or len(letter_locations["c"]) == 0:
         return False
@@ -874,7 +974,7 @@ def has_dme_arc_in_plan_view(plan_view_box, plate, plan_view_rawdict=None):
 
 
 def extract_vertical_profile_info(
-    plate: pymupdf.Page, profile_view_box: pymupdf.Rect
+    plate: pymupdf.Page, profile_view_box: pymupdf.Rect, words=None
 ) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[bool]]:
     """Extracts VDA, TCH, VGSI Angle, VGSI TCH strings and not coincident flag,
     using line info for VGSI and positional info for VDA/TCH.
@@ -889,28 +989,38 @@ def extract_vertical_profile_info(
     if profile_view_box is None:
         return None, None, None, None, None
 
-    # Get raw text for "not coincident" check first
-    profile_text_raw = plate.get_text(option="text", clip=profile_view_box, sort=True)
+    if words is None:
+        # Keep the direct-call behavior, including its clipped extraction path.
+        profile_text_raw = plate.get_text(
+            option="text", clip=profile_view_box, sort=True
+        )
+    else:
+        profile_text_raw = pymupdf_extracted_words_to_string(words)
     if "not coincident".lower() in profile_text_raw.lower():
         vgsi_vda_not_coincident = True
 
     # --- VGSI Extraction (Line-based) ---
-    # Use get_text("dict") to get line info, though blocks might be safer if lines split
-    profile_dict = plate.get_text("dict", clip=profile_view_box, sort=True)
-    for block in profile_dict.get("blocks", []):
-        for line in block.get("lines", []):
-            line_text = "".join([span["text"] for span in line.get("spans", [])])
-            if "VGSI Angle".lower() in line_text.lower():
-                vgsi_match = VGSI_PATTERN.search(line_text)
-                if vgsi_match:
-                    vgsi_angle = vgsi_match.group(1).strip()
-                    vgsi_tch = vgsi_match.group(2).strip()
-                    break  # Assume only one such line
-        if vgsi_angle is not None:  # Break outer loop too
-            break
+    if words is None:
+        # Use get_text("dict") to get line info, though blocks might be safer if lines split
+        profile_dict = plate.get_text("dict", clip=profile_view_box, sort=True)
+        profile_lines = [
+            "".join([span["text"] for span in line.get("spans", [])])
+            for block in profile_dict.get("blocks", [])
+            for line in block.get("lines", [])
+        ]
+    else:
+        profile_lines = pymupdf_group_words_into_source_lines(words)
+    for line_text in profile_lines:
+        if "VGSI Angle".lower() in line_text.lower():
+            vgsi_match = VGSI_PATTERN.search(line_text)
+            if vgsi_match:
+                vgsi_angle = vgsi_match.group(1).strip()
+                vgsi_tch = vgsi_match.group(2).strip()
+                break  # Assume only one such line
 
     # --- VDA Extraction (Positional Analysis) ---
-    words = plate.get_text("words", clip=profile_view_box, sort=True)
+    if words is None:
+        words = plate.get_text("words", clip=profile_view_box, sort=True)
     horizontal_closeness_threshold = 5
 
     for i, word_info in enumerate(words):

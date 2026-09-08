@@ -31,7 +31,7 @@ def extract_information_from_pdf_with_timing(pdf, debug=False):
     overall_start = time.perf_counter()
 
     start = time.perf_counter()
-    drawings = plate.get_drawings()
+    drawings = plate.get_cdrawings()
     timings["drawings_extraction"] = time.perf_counter() - start
 
     start = time.perf_counter()
