@@ -266,10 +266,14 @@ def extract_text_from_segmented_plate(
             return text.strip()
         return text
 
-    approach_course_box = rectangle_layout[0][1]
-    # Some RNP approaches do not have a channel/ILS box on the top-left
-    if len(rectangle_layout[0]) == 2:
+    # Some RNP approaches do not have a channel/ILS box on the top-left, and
+    # some have no separate airport-elevation box either (a single top box).
+    if len(rectangle_layout[0]) >= 3:
+        approach_course_box = rectangle_layout[0][1]
+    elif len(rectangle_layout[0]) == 2:
         approach_course_box = rectangle_layout[0][0]
+    else:
+        approach_course_box = pymupdf.Rect()
     # One legacy curved-text course box has source-word line order unlike
     # get_textbox; preserve that exact result without affecting the cache.
     approach_text = plate.get_textbox(approach_course_box, textpage=textpage)
@@ -285,12 +289,16 @@ def extract_text_from_segmented_plate(
     approach_title = pymupdf_group_words_into_lines_based_on_vertical_position(
         approach_title
     )
-    # Ignore lines with the FAA-approach identifier
+    # Ignore lines with the FAA-approach identifier. On some plates the
+    # identifier (e.g. "AL-183 (FAA)") is rendered on the same line as the
+    # approach title; in that case strip just the identifier prefix and keep
+    # the rest of the title rather than dropping the whole line.
     approach_title = [
-        line
+        re.sub(r"^AL-\d+\s*\(FAA\)\s*", "", line)
         for line in approach_title
-        if ("(FAA)" not in line) and (not line.isdigit())
+        if not line.isdigit()
     ]
+    approach_title = [line for line in approach_title if "(FAA)" not in line]
     # If there is an ILS category like `(CAT II)`, append it to the approach
     # name.
     if len(approach_title) == 3 and (
@@ -309,7 +317,7 @@ def extract_text_from_segmented_plate(
     approach_name, airport_name = approach_title
 
     # Get all the waypoints in the plan view.
-    plan_view_box = find_plan_view_box(rectangle_layout, plate)
+    plan_view_box = find_plan_view_box(rectangle_layout, plate, drawings)
     plan_view_words = filter_segment_words(all_words, plan_view_box)
     plan_view_rawdict = filter_chars_by_origin(all_chars, plan_view_box)
     waypoints = extract_all_waypoints_from_plan_view(
@@ -633,6 +641,12 @@ def extract_minimums(
         num_minimums = 0
         j = 0
         while num_minimums < 4:
+            # Some plates only box the categories for which the approach is
+            # authorized (the remaining categories are unboxed "NA"), so a row
+            # can have fewer minimums cells than categories. Stop when we run
+            # out of cells; the missing categories are padded with None below.
+            if j + 1 >= len(rectangle_layout[i]):
+                break
             minimums_box = rectangle_layout[i][j + 1]
             minimums = extract_minimums_from_text_box(
                 minimums_box,
@@ -654,6 +668,11 @@ def extract_minimums(
         # Some plates have special category E for very fast military planes.
         # Let's ignore those :)
         minimums_per_category = minimums_per_category[:4]
+
+        # Pad any categories that were not boxed on the plate (unauthorized
+        # categories are not given a cell).
+        while len(minimums_per_category) < 4:
+            minimums_per_category.append(None)
 
         cat_a, cat_b, cat_c, cat_d = minimums_per_category
         all_minimums.append(
@@ -1101,7 +1120,7 @@ def extract_vertical_profile_info(
     return vda, tch, vgsi_angle, vgsi_tch, vgsi_vda_not_coincident
 
 
-def find_plan_view_box(rectangle_layout, plate) -> pymupdf.Rect:
+def find_plan_view_box(rectangle_layout, plate, drawings=None) -> pymupdf.Rect:
     """Find the plan view part of the plate"""
     # Largest rectangle is probably the plan view.
     largest_rect = rectangle_layout[0][0]
@@ -1113,20 +1132,105 @@ def find_plan_view_box(rectangle_layout, plate) -> pymupdf.Rect:
 
     # Validate that the rectangle is around the middle of the plate, that's
     # where we expect it to be.
-    if not (
+    if (
         largest_rect.top_left.y < (plate.rect.height / 2)
         and largest_rect.bottom_right.y > (plate.rect.height / 2)
         and largest_rect.top_left.x < (plate.rect.width / 2)
         and largest_rect.bottom_right.x > (plate.rect.width / 2)
     ):
-        # Imported here to avoid a circular import at module load time
-        # (plate_analyzer/__init__.py imports this module first).
-        from . import PlateAnalyzerException
+        return largest_rect
 
-        raise PlateAnalyzerException(
-            f"Plan view not found: largest rectangle {largest_rect} does not "
-            f"straddle plate center ({plate.rect.width / 2:.0f}, "
-            f"{plate.rect.height / 2:.0f})"
-        )
+    # The largest rectangle does not straddle the plate center. On some plates
+    # the plan-view border is not detected as a single connected component
+    # (e.g., a 1px gap in its border, or its border touching other content), so
+    # no enclosing rectangle is produced. Fall back to locating the plan-view
+    # border directly from the long axis-aligned border lines: the plan view is
+    # the box whose four edges are the innermost long lines straddling the
+    # plate center.
+    if drawings is not None:
+        fallback = _find_plan_view_from_border_lines(drawings, plate)
+        if fallback is not None:
+            return fallback
 
-    return largest_rect
+    # Imported here to avoid a circular import at module load time
+    # (plate_analyzer/__init__.py imports this module first).
+    from . import PlateAnalyzerException
+
+    raise PlateAnalyzerException(
+        f"Plan view not found: largest rectangle {largest_rect} does not "
+        f"straddle plate center ({plate.rect.width / 2:.0f}, "
+        f"{plate.rect.height / 2:.0f})"
+    )
+
+
+def _find_plan_view_from_border_lines(drawings, plate) -> Optional[pymupdf.Rect]:
+    """Locate the plan-view box from long axis-aligned border lines.
+
+    Used as a fallback when connected-component segmentation fails to produce a
+    rectangle enclosing the plan view. The plan view is the large box around the
+    plate center, so its four edges are the innermost long lines that straddle
+    the center.
+    """
+    from . import segmentation
+
+    center_x = plate.rect.width / 2
+    center_y = plate.rect.height / 2
+
+    # Collect long axis-aligned line segments (same normalization as
+    # segmentation, minus the image rendering).
+    lines = []
+    for path in drawings:
+        for item in path["items"]:
+            if item[0] == "qu":
+                as_rect = segmentation.make_rectangle_from_quad(item[1])
+                if as_rect is not None:
+                    item = ("re", as_rect)
+            if item[0] == "l":
+                if abs(item[1][0] - item[2][0]) < 2 or abs(item[1][1] - item[2][1]) < 2:
+                    lines.append(
+                        segmentation.line_segment_as_rect_from_points(item[1], item[2])
+                    )
+            elif item[0] == "re":
+                x0, y0, x1, y1 = item[1]
+                lines.extend(
+                    (
+                        segmentation.line_segment_as_rect_from_points(
+                            (x0, y0), (x0, y1)
+                        ),
+                        segmentation.line_segment_as_rect_from_points(
+                            (x1, y0), (x1, y1)
+                        ),
+                        segmentation.line_segment_as_rect_from_points(
+                            (x0, y0), (x1, y0)
+                        ),
+                        segmentation.line_segment_as_rect_from_points(
+                            (x0, y1), (x1, y1)
+                        ),
+                    )
+                )
+    lines = list(dict.fromkeys(lines))
+    lines = [l for l in lines if l[2] - l[0] > 6 or l[3] - l[1] > 6]
+
+    # Vertical lines that span the vertical center; horizontal lines that span
+    # the horizontal center.
+    vertical = [l for l in lines if l[0] == l[2] and l[1] < center_y < l[3]]
+    horizontal = [l for l in lines if l[1] == l[3] and l[0] < center_x < l[2]]
+    if not vertical or not horizontal:
+        return None
+
+    left = max(
+        (l for l in vertical if l[0] <= center_x), key=lambda l: l[0], default=None
+    )
+    right = min(
+        (l for l in vertical if l[0] >= center_x), key=lambda l: l[0], default=None
+    )
+    top = max(
+        (l for l in horizontal if l[1] <= center_y), key=lambda l: l[1], default=None
+    )
+    bottom = min(
+        (l for l in horizontal if l[1] >= center_y), key=lambda l: l[1], default=None
+    )
+    if not all((left, right, top, bottom)):
+        return None
+
+    return pymupdf.Rect(left[0], top[1], right[0], bottom[1])
