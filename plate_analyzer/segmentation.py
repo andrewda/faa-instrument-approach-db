@@ -5,6 +5,70 @@ import skimage
 from typing import Optional
 
 
+def join_collinear_adjacent_lines(lines, max_gap=2):
+    """
+    Join collinear line segments that are adjacent or have a small gap.
+
+    Some plates draw a border as multiple segments with tiny gaps (e.g., 1px).
+    When rendered to an image for connected-component labeling, these gaps
+    prevent regions from being detected as single connected components.
+
+    Args:
+        lines: List of (x0, y0, x1, y1) tuples representing line segments.
+        max_gap: Maximum gap in pixels to bridge.
+
+    Returns:
+        List of joined line segments.
+    """
+    # Separate vertical and horizontal lines
+    vertical = []
+    horizontal = []
+    for x0, y0, x1, y1 in lines:
+        if x0 == x1:
+            vertical.append((x0, y0, x1, y1))
+        elif y0 == y1:
+            horizontal.append((x0, y0, x1, y1))
+        else:
+            # Should not happen after filtering, but keep as-is
+            vertical.append((x0, y0, x1, y1))
+
+    def join_lines(line_list, is_vertical):
+        # Group by fixed coordinate (x for vertical, y for horizontal)
+        groups = {}
+        for x0, y0, x1, y1 in line_list:
+            key = x0 if is_vertical else y0
+            if key not in groups:
+                groups[key] = []
+            # Store as (start, end) on the variable axis
+            if is_vertical:
+                groups[key].append((y0, y1, x0))
+            else:
+                groups[key].append((x0, x1, y0))
+
+        joined = []
+        for key, segments in groups.items():
+            # Sort by start coordinate
+            segments.sort(key=lambda s: s[0])
+            merged = []
+            for start, end, fixed in segments:
+                if merged and start <= merged[-1][1] + max_gap:
+                    # Overlapping or adjacent - extend the last segment
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], end), fixed)
+                else:
+                    merged.append((start, end, fixed))
+
+            # Convert back to (x0, y0, x1, y1) format
+            for start, end, fixed in merged:
+                if is_vertical:
+                    joined.append((fixed, start, fixed, end))
+                else:
+                    joined.append((start, fixed, end, fixed))
+
+        return joined
+
+    return join_lines(vertical, True) + join_lines(horizontal, False)
+
+
 def line_segment_as_rect_from_points(point1, point2):
     """
     Creates a normalized tuple from point1 and point2 representing a line segment.
@@ -83,6 +147,11 @@ def segment_plate_into_rectangles(plate, drawings, debug=False):
 
     # Adjacent rectangle items commonly share exact rounded edges.
     lines = list(dict.fromkeys(lines))
+
+    # Join collinear adjacent segments that have small gaps (e.g., 1px).
+    # This prevents the connected-component labeling from splitting regions
+    # at gaps in what should be continuous borders.
+    lines = join_collinear_adjacent_lines(lines, max_gap=2)
 
     # Filter out short lines.
     lines = [line for line in lines if line[2] - line[0] > 6 or line[3] - line[1] > 6]
