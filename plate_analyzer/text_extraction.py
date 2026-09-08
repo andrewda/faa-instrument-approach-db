@@ -351,11 +351,11 @@ def extract_text_from_segmented_plate(
         raise ValueError("Could not find missed approach instructions")
 
     # Comments box will be more than a third the width of the document, and
-    # its bottom will line up with the missed approach box.
+    # its bottom will line up with the missed approach box. On some plates the
+    # missed approach box is itself the wide comments box, so it is a valid
+    # candidate.
     comments_box = None
     for rect in comment_candidates:
-        if rect == missed_approach_rect:
-            continue
         if abs(rect.bottom_left.y - missed_approach_rect.bottom_left.y) < 3:
             if comments_box is None or rect.width > comments_box.width:
                 comments_box = rect
