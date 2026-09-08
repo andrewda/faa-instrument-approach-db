@@ -89,7 +89,9 @@ def rect_to_cache_key(rect: pymupdf.Rect) -> Tuple[float, float, float, float]:
 
 
 def build_rectangle_text_cache(
-    rectangle_layout: List[List[pymupdf.Rect]], plate: pymupdf.Page, textpage,
+    rectangle_layout: List[List[pymupdf.Rect]],
+    plate: pymupdf.Page,
+    textpage,
     all_words=None,
 ) -> Dict[Tuple[float, float, float, float], str]:
     if all_words is None:
@@ -392,9 +394,7 @@ def extract_text_from_segmented_plate(
     left_side_comments = pymupdf.Rect(
         comments_box.top_left, comments_box.bottom_left + pymupdf.Point(10, 0)
     )
-    left_side_text = words_to_text(
-        filter_segment_words(all_words, left_side_comments)
-    )
+    left_side_text = words_to_text(filter_segment_words(all_words, left_side_comments))
     if "A" in left_side_text:
         non_standard_takeoff_minimums = True
     if "T" in left_side_text:
@@ -404,9 +404,7 @@ def extract_text_from_segmented_plate(
         left_side_comments.top_right, comments_box.bottom_right
     )
     # Same legacy ordering exception as the missed-approach box above.
-    comments_text = plate.get_text(
-        option="words", sort=True, clip=right_side_comments
-    )
+    comments_text = plate.get_text(option="words", sort=True, clip=right_side_comments)
     comments_text = pymupdf_extracted_words_to_string(comments_text)
     # Remove solitary As and Ts from the start and end of comments. More than
     # likely just accidentally included the alternatives symbols.
@@ -420,9 +418,7 @@ def extract_text_from_segmented_plate(
     )
 
     if required_equipment:
-        required_equipment_text = filter_segment_words(
-            all_words, required_equipment
-        )
+        required_equipment_text = filter_segment_words(all_words, required_equipment)
         required_equipment = (
             required_equipment,
             pymupdf_extracted_words_to_string(required_equipment_text),
@@ -476,9 +472,11 @@ def extract_text_from_segmented_plate(
         extract_vertical_profile_info(
             plate,
             profile_view_box,
-            words=filter_segment_words(all_words, profile_view_box)
-            if profile_view_box
-            else None,
+            words=(
+                filter_segment_words(all_words, profile_view_box)
+                if profile_view_box
+                else None
+            ),
         )
     )
 
@@ -592,9 +590,7 @@ def extract_minimums(
     if preextracted_words is None:
         minimums_words = plate.get_text("words", clip=minimums_region, sort=True)
     else:
-        minimums_words = filter_segment_words(
-            preextracted_words, minimums_region
-        )
+        minimums_words = filter_segment_words(preextracted_words, minimums_region)
         # A full-page sorted word list can place adjacent minimums lines in
         # source order rather than the clipped extractor's visual order.
         minimums_words.sort(key=lambda word: (word[1], word[0]))

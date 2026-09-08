@@ -65,17 +65,15 @@ def extract_approach_metadata(plan_view_box, plate, drawings, debug=False):
 
         # Also add a rounded version of the curve start and end points for when
         # we check the interception.
-        bezier_curve_locations.add(
-            (round(curve_start[0], 1), round(curve_start[1], 1))
-        )
-        bezier_curve_locations.add(
-            (round(curve_end[0], 1), round(curve_end[1], 1))
-        )
+        bezier_curve_locations.add((round(curve_start[0], 1), round(curve_start[1], 1)))
+        bezier_curve_locations.add((round(curve_end[0], 1), round(curve_end[1], 1)))
         if debug:
             debug_curves.extend(path["items"])
     # Draw out a perpendicular line from each end of the arc-diameter lines and
     # check if they intercept any other bezier_curve_locations.
-    bezier_curve_location_arrays = [np.array(location) for location in bezier_curve_locations]
+    bezier_curve_location_arrays = [
+        np.array(location) for location in bezier_curve_locations
+    ]
     for line in arc_diameter_lines:
         perp_line_1, perp_line_2 = get_i_beam_from_line(line)
 
@@ -220,7 +218,9 @@ def extract_approach_metadata(plan_view_box, plate, drawings, debug=False):
             shape.finish(color=(1, 0.5, 0.5))
             shape.draw_line(hypotenuse[0], hypotenuse[1])
             shape.finish(color=(0.5, 0.5, 1))
-            outpage.insert_text((base[0][0] + 2, base[0][1] + 2), "A: " + str(int(angle)))
+            outpage.insert_text(
+                (base[0][0] + 2, base[0][1] + 2), "A: " + str(int(angle))
+            )
 
         shape.commit()
         outpage.get_pixmap(dpi=400).save("drawings.png")
