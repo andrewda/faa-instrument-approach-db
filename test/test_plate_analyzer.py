@@ -16,6 +16,7 @@ PORTLAND_TEST_PLATE = TEST_DATA_DIR / "00330IL10R.pdf"
 BROOKHAVEN_TEST_PLATE = TEST_DATA_DIR / "05603V6.pdf"
 ASPEN_TEST_PLATE = TEST_DATA_DIR / "05889LDE.pdf"
 CLINTON_TEST_PLATE = TEST_DATA_DIR / "00233R4L.PDF"
+CORVALLIS_TEST_PLATE = TEST_DATA_DIR / "00782IL17.PDF"
 
 
 @pytest.fixture(scope="session")
@@ -443,3 +444,70 @@ def test_extract_gets_correct_minimums_for_clinton(clinton_info):
     assert circling_approach.cat_d.altitude_msl == "1180"
     assert circling_approach.cat_d.altitude_agl == "914"
     assert circling_approach.cat_d.visibility == "3"
+
+
+@pytest.fixture(scope="session")
+def corvallis_info():
+    return plate_analyzer.extract_information_from_plate(CORVALLIS_TEST_PLATE)
+
+
+def test_extract_gets_correct_approach_title_for_corvallis(corvallis_info):
+    assert corvallis_info.approach_name == "ILS or LOC RWY 17"
+    assert corvallis_info.airport_name == "CORVALLIS MUNI (CVO)"
+
+
+def test_extract_gets_correct_approach_plan_view_data_for_corvallis(corvallis_info):
+    # Regression test: this plate's left border is drawn as two segments with
+    # a 1px gap at the top of the plan view, which used to prevent the plan
+    # view from being detected as a single connected component and made
+    # find_plan_view_box fail its midline assertion.
+    assert corvallis_info.has_dme_arc == True
+    assert corvallis_info.has_procedure_turn == False
+    assert corvallis_info.has_hold_in_lieu_of_procedure_turn == True
+
+
+def test_extract_gets_correct_required_equipment_for_corvallis(corvallis_info):
+    assert corvallis_info.required_equipment[1] == "DME required."
+
+
+def test_extract_gets_correct_minimums_for_corvallis(corvallis_info):
+    assert len(corvallis_info.approach_minimums) == 3
+
+    ils_approach = corvallis_info.approach_minimums[0]
+    assert ils_approach.approach_type == "S-ILS 17"
+    assert ils_approach.cat_a.altitude_msl == "448"
+    assert ils_approach.cat_a.altitude_agl == "200"
+    assert ils_approach.cat_a.visibility == "1/2"
+    assert ils_approach.cat_d == ils_approach.cat_a
+
+    loc_approach = corvallis_info.approach_minimums[1]
+    assert loc_approach.approach_type == "S-LOC 17"
+    assert loc_approach.cat_a.altitude_msl == "880"
+    assert loc_approach.cat_a.altitude_agl == "632"
+    assert loc_approach.cat_a.visibility == "1/2"
+    assert loc_approach.cat_b == loc_approach.cat_a
+    assert loc_approach.cat_c.altitude_msl == "880"
+    assert loc_approach.cat_c.altitude_agl == "632"
+    assert loc_approach.cat_c.visibility == "1 3/8"
+    assert loc_approach.cat_d == loc_approach.cat_c
+
+    circling_approach = corvallis_info.approach_minimums[2]
+    assert circling_approach.approach_type == "CIRCLING"
+    assert circling_approach.cat_a.altitude_msl == "880"
+    assert circling_approach.cat_a.altitude_agl == "630"
+    assert circling_approach.cat_a.visibility == "1"
+    assert circling_approach.cat_b == circling_approach.cat_a
+    assert circling_approach.cat_c.altitude_msl == "920"
+    assert circling_approach.cat_c.altitude_agl == "670"
+    assert circling_approach.cat_c.visibility == "1 3/4"
+    assert circling_approach.cat_d.altitude_msl == "1060"
+    assert circling_approach.cat_d.altitude_agl == "810"
+    assert circling_approach.cat_d.visibility == "2 1/2"
+
+
+def test_extract_gets_correct_vertical_profile_for_corvallis(corvallis_info):
+    assert corvallis_info.vda == "3.00"
+    assert corvallis_info.tch == "45"
+    assert corvallis_info.vgsi_angle is None
+    assert corvallis_info.vgsi_tch is None
+    assert corvallis_info.vgsi_vda_not_coincident == False

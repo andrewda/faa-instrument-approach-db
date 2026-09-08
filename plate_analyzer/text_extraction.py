@@ -1111,11 +1111,22 @@ def find_plan_view_box(rectangle_layout, plate) -> pymupdf.Rect:
             if rect.get_area() > largest_rect.get_area():
                 largest_rect = rect
 
-    # Just assert that the rectangle is around the middle of the plate, that's
+    # Validate that the rectangle is around the middle of the plate, that's
     # where we expect it to be.
-    assert largest_rect.top_left.y < (plate.rect.height / 2)
-    assert largest_rect.bottom_right.y > (plate.rect.height / 2)
-    assert largest_rect.top_left.x < (plate.rect.width / 2)
-    assert largest_rect.bottom_right.x > (plate.rect.width / 2)
+    if not (
+        largest_rect.top_left.y < (plate.rect.height / 2)
+        and largest_rect.bottom_right.y > (plate.rect.height / 2)
+        and largest_rect.top_left.x < (plate.rect.width / 2)
+        and largest_rect.bottom_right.x > (plate.rect.width / 2)
+    ):
+        # Imported here to avoid a circular import at module load time
+        # (plate_analyzer/__init__.py imports this module first).
+        from . import PlateAnalyzerException
+
+        raise PlateAnalyzerException(
+            f"Plan view not found: largest rectangle {largest_rect} does not "
+            f"straddle plate center ({plate.rect.width / 2:.0f}, "
+            f"{plate.rect.height / 2:.0f})"
+        )
 
     return largest_rect
